@@ -1,4 +1,4 @@
-module copyright
+module github.com/ipfs/go-ipfs
 
 require (
 	bazil.org/fuse v0.0.0-20200117225306-7b5117fecadc
@@ -11,7 +11,7 @@ require (
 	github.com/fatih/color v1.9.0 // indirect
 	github.com/fsnotify/fsnotify v1.4.9
 	github.com/go-bindata/go-bindata/v3 v3.1.3
-	github.com/gogo/protobuf v1.3.1
+	github.com/gogo/protobuf v1.3.2
 	github.com/hashicorp/go-multierror v1.1.0
 	github.com/hashicorp/golang-lru v0.5.4
 	github.com/ipfs/go-bitswap v0.2.13
@@ -78,6 +78,7 @@ require (
 	github.com/libp2p/go-libp2p-secio v0.2.2
 	github.com/libp2p/go-libp2p-swarm v0.2.3
 	github.com/libp2p/go-libp2p-testing v0.1.1
+	github.com/libp2p/go-libp2p-through v0.0.1
 	github.com/libp2p/go-libp2p-tls v0.1.3
 	github.com/libp2p/go-libp2p-yamux v0.2.7
 	github.com/libp2p/go-maddr-filter v0.0.5
@@ -101,10 +102,27 @@ require (
 	github.com/whyrusleeping/tar-utils v0.0.0-20180509141711-8c6c8ba81d5c
 	go.uber.org/fx v1.12.0
 	go.uber.org/zap v1.14.1
-	golang.org/x/crypto v0.0.0-20200423211502-4bdfaf469ed5
-	golang.org/x/net v0.0.0-20200324143707-d3edc9973b7e // indirect
-	golang.org/x/sys v0.0.0-20200413165638-669c56c373c4
+	golang.org/x/crypto v0.0.0-20200622213623-75b288015ac9
+	golang.org/x/sys v0.0.0-20200930185726-fdedc70b468f
 	gopkg.in/cheggaaa/pb.v1 v1.0.28
 )
 
-go 1.14
+go 1.13
+
+replace (
+	github.com/ipfs/go-bitswap v0.2.13 => ./vendor/github.com/ipfs/go-bitswap
+	github.com/ipfs/go-ipfs-cmds v0.2.2 => ./vendor/github.com/ipfs/go-ipfs-cmds
+	github.com/ipfs/go-ipfs-config v0.5.3 => ./vendor/github.com/ipfs/go-ipfs-config
+	github.com/ipfs/interface-go-ipfs-core v0.2.7 => ./vendor/github.com/ipfs/interface-go-ipfs-core
+	github.com/libp2p/go-libp2p v0.8.3 => ./vendor/github.com/libp2p/go-libp2p
+	github.com/libp2p/go-libp2p-autonat v0.2.2 => ./vendor/github.com/libp2p/go-libp2p-autonat
+	github.com/libp2p/go-libp2p-blankhost v0.1.4 => ./vendor/github.com/libp2p/go-libp2p-blankhost
+	github.com/libp2p/go-libp2p-circuit v0.2.2 => ./vendor/github.com/libp2p/go-libp2p-circuit
+	github.com/libp2p/go-libp2p-core v0.5.2 => ./vendor/github.com/libp2p/go-libp2p-core
+	github.com/libp2p/go-libp2p-quic-transport v0.3.5 => ./vendor/github.com/libp2p/go-libp2p-quic-transport
+	github.com/libp2p/go-libp2p-swarm v0.2.3 => ./vendor/github.com/libp2p/go-libp2p-swarm
+	github.com/libp2p/go-libp2p-through v0.0.1 => ./vendor/github.com/libp2p/go-libp2p-through
+	github.com/libp2p/go-tcp-transport v0.2.0 => ./vendor/github.com/libp2p/go-tcp-transport
+	github.com/libp2p/go-ws-transport v0.3.1 => ./vendor/github.com/libp2p/go-ws-transport
+	github.com/multiformats/go-multiaddr v0.2.1 => ./vendor/github.com/multiformats/go-multiaddr
+)

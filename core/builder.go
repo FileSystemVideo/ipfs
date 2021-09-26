@@ -74,7 +74,6 @@ func NewNode(ctx context.Context, cfg *BuildCfg) (*IpfsNode, error) {
 		}
 	}()
 
-	//If an error occurs, the program needs to be terminated
 	if app.Err() != nil {
 		return nil, app.Err()
 	}

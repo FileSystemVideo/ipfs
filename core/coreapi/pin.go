@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	bserv "github.com/ipfs/go-blockservice"
-	"github.com/ipfs/go-cid"
+	//"github.com/ipfs/go-cid"
+	"errors"
+	cid "github.com/ipfs/go-cid"
 	offline "github.com/ipfs/go-ipfs-exchange-offline"
 	pin "github.com/ipfs/go-ipfs-pinner"
 	ipld "github.com/ipfs/go-ipld-format"
@@ -41,6 +43,10 @@ func (api *PinAPI) Add(ctx context.Context, p path.Path, opts ...caopts.PinAddOp
 	return api.pinning.Flush(ctx)
 }
 
+func (api *PinAPI) IsPinned(ctx context.Context, cid cid.Cid, pinType string) (bool, error) {
+	//当前正在使用的实现 daima.mobi/dmfs-libs/github.com/ipfs/go-ipfs-http-client@0.0.5/pin.go
+	return false, errors.New("Not implemented")
+}
 func (api *PinAPI) Ls(ctx context.Context, opts ...caopts.PinLsOption) ([]coreiface.Pin, error) {
 	settings, err := caopts.PinLsOptions(opts...)
 	if err != nil {
@@ -52,7 +58,6 @@ func (api *PinAPI) Ls(ctx context.Context, opts ...caopts.PinLsOption) ([]coreif
 	default:
 		return nil, fmt.Errorf("invalid type '%s', must be one of {direct, indirect, recursive, all}", settings.Type)
 	}
-
 	return api.pinLsAll(settings.Type, ctx)
 }
 

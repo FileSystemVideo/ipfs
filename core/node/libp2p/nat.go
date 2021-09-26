@@ -26,3 +26,17 @@ func AutoNATService(throttle *config.AutoNATThrottleConfig) func() Libp2pOpts {
 		return opts
 	}
 }
+
+func ForceReachabilityPublic() func() Libp2pOpts {
+	return func() (opts Libp2pOpts) {
+		opts.Opts = append(opts.Opts, libp2p.ForceReachabilityPublic())
+		return opts
+	}
+}
+
+func EnableSeedServer() func() Libp2pOpts {
+	return func() (opts Libp2pOpts) {
+		opts.Opts = append(opts.Opts, libp2p.EnableSeedService())
+		return opts
+	}
+}

@@ -109,6 +109,13 @@ func LibP2P(bcfg *BuildCfg, cfg *config.Config) fx.Option {
 		autonat = fx.Provide(libp2p.AutoNATService(cfg.AutoNAT.Throttle))
 	}
 
+	seedServerOpts := fx.Options()
+	if seedServer, ok := cfg.Plugins.Plugins["SeedServer"]; ok {
+		//如果开启了种子服务插件，则启动强制nat public
+		if !seedServer.Disabled {
+			seedServerOpts = fx.Provide(libp2p.ForceReachabilityPublic(), libp2p.EnableSeedServer())
+		}
+	}
 	// Gather all the options
 
 	opts := fx.Options(
@@ -132,6 +139,7 @@ func LibP2P(bcfg *BuildCfg, cfg *config.Config) fx.Option {
 		maybeProvide(libp2p.AutoRelay, cfg.Swarm.EnableAutoRelay),
 		maybeProvide(libp2p.QUIC, cfg.Experimental.QUIC),
 		autonat,
+		seedServerOpts,
 		connmgr,
 		ps,
 		disc,

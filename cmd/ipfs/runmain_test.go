@@ -8,6 +8,7 @@ import (
 	"io/ioutil"
 	"os"
 	"testing"
+	"time"
 )
 
 // this abuses go so much that I felt dirty writing this code
@@ -27,4 +28,15 @@ func TestRunMain(t *testing.T) {
 	null, _ := os.Open(os.DevNull)
 	os.Stderr = null
 	os.Stdout = null
+}
+
+func TestTime1(t *testing.T) {
+	time.se
+	now := time.Now()
+	d1 := time.Now().UnixNano()
+	t.Log(now.Format("2006/01/02 15:04:05.999999999"))
+	t.Log("unixNano:", d1)
+
+	t1 := time.Unix(0, d1)
+	t.Log(t1.Format("2006/01/02 15:04:05.999999999"))
 }

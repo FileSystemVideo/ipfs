@@ -34,6 +34,10 @@ type stringList struct {
 	Strings []string
 }
 
+type natStatus struct {
+	Status inet.Reachability
+}
+
 type addrMap struct {
 	Addrs map[string][]string
 }
@@ -48,11 +52,12 @@ ipfs peers in the internet.
 `,
 	},
 	Subcommands: map[string]*cmds.Command{
-		"addrs":      swarmAddrsCmd,
-		"connect":    swarmConnectCmd,
-		"disconnect": swarmDisconnectCmd,
-		"filters":    swarmFiltersCmd,
-		"peers":      swarmPeersCmd,
+		"addrs":       swarmAddrsCmd,
+		"connect":     swarmConnectCmd,
+		"disconnect":  swarmDisconnectCmd,
+		"filters":     swarmFiltersCmd,
+		"peers":       swarmPeersCmd,
+		"nat":         swarmNatCmd,
 	},
 }
 
@@ -62,6 +67,33 @@ const (
 	swarmLatencyOptionName   = "latency"
 	swarmDirectionOptionName = "direction"
 )
+
+var swarmNatCmd = &cmds.Command{
+	Helptext: cmds.HelpText{
+		Tagline:          "Print host nat status",
+		ShortDescription: `Print host nat status`,
+	},
+	Options: []cmds.Option{},
+	Run: func(req *cmds.Request, res cmds.ResponseEmitter, env cmds.Environment) error {
+		api, err := cmdenv.GetApi(env, req)
+		if err != nil {
+			return err
+		}
+
+		status, err := api.Swarm().Nat(req.Context)
+		if err != nil {
+			return err
+		}
+		return cmds.EmitOnce(res, &natStatus{Status: status})
+	},
+	Encoders: cmds.EncoderMap{
+		cmds.Text: cmds.MakeTypedEncoder(func(req *cmds.Request, w io.Writer, status *natStatus) error {
+			fmt.Fprintf(w, "nat status is:%d", status.Status)
+			return nil
+		}),
+	},
+	Type: natStatus{},
+}
 
 var swarmPeersCmd = &cmds.Command{
 	Helptext: cmds.HelpText{
