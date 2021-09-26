@@ -44,7 +44,7 @@ func (api *PinAPI) Add(ctx context.Context, p path.Path, opts ...caopts.PinAddOp
 }
 
 func (api *PinAPI) IsPinned(ctx context.Context, cid cid.Cid, pinType string) (bool, error) {
-	//当前正在使用的实现 daima.mobi/dmfs-libs/github.com/ipfs/go-ipfs-http-client@0.0.5/pin.go
+	//当前正在使用的实现
 	return false, errors.New("Not implemented")
 }
 func (api *PinAPI) Ls(ctx context.Context, opts ...caopts.PinLsOption) ([]coreiface.Pin, error) {
