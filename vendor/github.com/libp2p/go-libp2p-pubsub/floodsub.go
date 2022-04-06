@@ -3,8 +3,6 @@ package pubsub
 import (
 	"context"
 
-	pb "github.com/libp2p/go-libp2p-pubsub/pb"
-
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/protocol"
@@ -69,23 +67,18 @@ func (fs *FloodSubRouter) EnoughPeers(topic string, suggested int) bool {
 	return false
 }
 
+func (fs *FloodSubRouter) AcceptFrom(peer.ID) AcceptStatus {
+	return AcceptAll
+}
+
 func (fs *FloodSubRouter) HandleRPC(rpc *RPC) {}
 
-func (fs *FloodSubRouter) Publish(from peer.ID, msg *pb.Message) {
-	tosend := make(map[peer.ID]struct{})
-	for _, topic := range msg.GetTopicIDs() {
-		tmap, ok := fs.p.topics[topic]
-		if !ok {
-			continue
-		}
+func (fs *FloodSubRouter) Publish(msg *Message) {
+	from := msg.ReceivedFrom
+	topic := msg.GetTopic()
 
-		for p := range tmap {
-			tosend[p] = struct{}{}
-		}
-	}
-
-	out := rpcWithMessages(msg)
-	for pid := range tosend {
+	out := rpcWithMessages(msg.Message)
+	for pid := range fs.p.topics[topic] {
 		if pid == from || pid == peer.ID(msg.GetFrom()) {
 			continue
 		}
@@ -111,5 +104,5 @@ func (fs *FloodSubRouter) Join(topic string) {
 }
 
 func (fs *FloodSubRouter) Leave(topic string) {
-	fs.tracer.Join(topic)
+	fs.tracer.Leave(topic)
 }

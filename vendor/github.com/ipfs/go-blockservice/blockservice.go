@@ -13,7 +13,7 @@ import (
 	cid "github.com/ipfs/go-cid"
 	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	exchange "github.com/ipfs/go-ipfs-exchange-interface"
-	logging "github.com/ipfs/go-log"
+	logging "github.com/ipfs/go-log/v2"
 	"github.com/ipfs/go-verifcid"
 )
 
@@ -51,14 +51,14 @@ type BlockService interface {
 	Exchange() exchange.Interface
 
 	// AddBlock puts a given block to the underlying datastore
-	AddBlock(o blocks.Block) error
+	AddBlock(ctx context.Context, o blocks.Block) error
 
 	// AddBlocks adds a slice of blocks at the same time using batching
 	// capabilities of the underlying datastore whenever possible.
-	AddBlocks(bs []blocks.Block) error
+	AddBlocks(ctx context.Context, bs []blocks.Block) error
 
 	// DeleteBlock deletes the given block from the blockservice.
-	DeleteBlock(o cid.Cid) error
+	DeleteBlock(ctx context.Context, o cid.Cid) error
 }
 
 type blockService struct {
@@ -130,7 +130,7 @@ func NewSession(ctx context.Context, bs BlockService) *Session {
 
 // AddBlock adds a particular block to the service, Putting it into the datastore.
 // TODO pass a context into this if the remote.HasBlock is going to remain here.
-func (s *blockService) AddBlock(o blocks.Block) error {
+func (s *blockService) AddBlock(ctx context.Context, o blocks.Block) error {
 	c := o.Cid()
 	// hash security
 	err := verifcid.ValidateCid(c)
@@ -138,19 +138,19 @@ func (s *blockService) AddBlock(o blocks.Block) error {
 		return err
 	}
 	if s.checkFirst {
-		if has, err := s.blockstore.Has(c); has || err != nil {
+		if has, err := s.blockstore.Has(ctx, c); has || err != nil {
 			return err
 		}
 	}
 
-	if err := s.blockstore.Put(o); err != nil {
+	if err := s.blockstore.Put(ctx, o); err != nil {
 		return err
 	}
 
-	log.Event(context.TODO(), "BlockService.BlockAdded", c)
+	log.Debugf("BlockService.BlockAdded %s", c)
 
 	if s.exchange != nil {
-		if err := s.exchange.HasBlock(o); err != nil {
+		if err := s.exchange.HasBlock(ctx, o); err != nil {
 			log.Errorf("HasBlock: %s", err.Error())
 		}
 	}
@@ -158,7 +158,7 @@ func (s *blockService) AddBlock(o blocks.Block) error {
 	return nil
 }
 
-func (s *blockService) AddBlocks(bs []blocks.Block) error {
+func (s *blockService) AddBlocks(ctx context.Context, bs []blocks.Block) error {
 	// hash security
 	for _, b := range bs {
 		err := verifcid.ValidateCid(b.Cid())
@@ -170,7 +170,7 @@ func (s *blockService) AddBlocks(bs []blocks.Block) error {
 	if s.checkFirst {
 		toput = make([]blocks.Block, 0, len(bs))
 		for _, b := range bs {
-			has, err := s.blockstore.Has(b.Cid())
+			has, err := s.blockstore.Has(ctx, b.Cid())
 			if err != nil {
 				return err
 			}
@@ -186,15 +186,15 @@ func (s *blockService) AddBlocks(bs []blocks.Block) error {
 		return nil
 	}
 
-	err := s.blockstore.PutMany(toput)
+	err := s.blockstore.PutMany(ctx, toput)
 	if err != nil {
 		return err
 	}
 
 	if s.exchange != nil {
 		for _, o := range toput {
-			log.Event(context.TODO(), "BlockService.BlockAdded", o.Cid())
-			if err := s.exchange.HasBlock(o); err != nil {
+			log.Debugf("BlockService.BlockAdded %s", o.Cid())
+			if err := s.exchange.HasBlock(ctx, o); err != nil {
 				log.Errorf("HasBlock: %s", err.Error())
 			}
 		}
@@ -225,7 +225,7 @@ func getBlock(ctx context.Context, c cid.Cid, bs blockstore.Blockstore, fget fun
 		return nil, err
 	}
 
-	block, err := bs.Get(c)
+	block, err := bs.Get(ctx, c)
 	if err == nil {
 		return block, nil
 	}
@@ -243,7 +243,7 @@ func getBlock(ctx context.Context, c cid.Cid, bs blockstore.Blockstore, fget fun
 			}
 			return nil, err
 		}
-		log.Event(ctx, "BlockService.BlockFetched", c)
+		log.Debugf("BlockService.BlockFetched %s", c)
 		return blk, nil
 	}
 
@@ -273,21 +273,30 @@ func getBlocks(ctx context.Context, ks []cid.Cid, bs blockstore.Blockstore, fget
 	go func() {
 		defer close(out)
 
-		k := 0
+		allValid := true
 		for _, c := range ks {
-			// hash security
-			if err := verifcid.ValidateCid(c); err == nil {
-				ks[k] = c
-				k++
-			} else {
-				log.Errorf("unsafe CID (%s) passed to blockService.GetBlocks: %s", c, err)
+			if err := verifcid.ValidateCid(c); err != nil {
+				allValid = false
+				break
 			}
 		}
-		ks = ks[:k]
+
+		if !allValid {
+			ks2 := make([]cid.Cid, 0, len(ks))
+			for _, c := range ks {
+				// hash security
+				if err := verifcid.ValidateCid(c); err == nil {
+					ks2 = append(ks2, c)
+				} else {
+					log.Errorf("unsafe CID (%s) passed to blockService.GetBlocks: %s", c, err)
+				}
+			}
+			ks = ks2
+		}
 
 		var misses []cid.Cid
 		for _, c := range ks {
-			hit, err := bs.Get(c)
+			hit, err := bs.Get(ctx, c)
 			if err != nil {
 				misses = append(misses, c)
 				continue
@@ -311,7 +320,7 @@ func getBlocks(ctx context.Context, ks []cid.Cid, bs blockstore.Blockstore, fget
 		}
 
 		for b := range rblocks {
-			log.Event(ctx, "BlockService.BlockFetched", b.Cid())
+			log.Debugf("BlockService.BlockFetched %s", b.Cid())
 			select {
 			case out <- b:
 			case <-ctx.Done():
@@ -323,10 +332,10 @@ func getBlocks(ctx context.Context, ks []cid.Cid, bs blockstore.Blockstore, fget
 }
 
 // DeleteBlock deletes a block in the blockservice from the datastore
-func (s *blockService) DeleteBlock(c cid.Cid) error {
-	err := s.blockstore.DeleteBlock(c)
+func (s *blockService) DeleteBlock(ctx context.Context, c cid.Cid) error {
+	err := s.blockstore.DeleteBlock(ctx, c)
 	if err == nil {
-		log.Event(context.TODO(), "BlockService.BlockDeleted", c)
+		log.Debugf("BlockService.BlockDeleted %s", c)
 	}
 	return err
 }
@@ -357,12 +366,20 @@ func (s *Session) getSession() exchange.Fetcher {
 
 // GetBlock gets a block in the context of a request session
 func (s *Session) GetBlock(ctx context.Context, c cid.Cid) (blocks.Block, error) {
-	return getBlock(ctx, c, s.bs, s.getSession) // hash security
+	var f func() exchange.Fetcher
+	if s.sessEx != nil {
+		f = s.getSession
+	}
+	return getBlock(ctx, c, s.bs, f) // hash security
 }
 
 // GetBlocks gets blocks in the context of a request session
 func (s *Session) GetBlocks(ctx context.Context, ks []cid.Cid) <-chan blocks.Block {
-	return getBlocks(ctx, ks, s.bs, s.getSession) // hash security
+	var f func() exchange.Fetcher
+	if s.sessEx != nil {
+		f = s.getSession
+	}
+	return getBlocks(ctx, ks, s.bs, f) // hash security
 }
 
 var _ BlockGetter = (*Session)(nil)

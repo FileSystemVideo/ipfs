@@ -6,7 +6,7 @@ import (
 	pq "github.com/ipfs/go-ipfs-pq"
 	"github.com/ipfs/go-peertaskqueue/peertask"
 	"github.com/ipfs/go-peertaskqueue/peertracker"
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	"github.com/libp2p/go-libp2p-core/peer"
 )
 
 type peerTaskQueueEvent int
@@ -23,13 +23,16 @@ type hookFunc func(p peer.ID, event peerTaskQueueEvent)
 // to execute the block with the highest priority, or otherwise the one added
 // first if priorities are equal.
 type PeerTaskQueue struct {
-	lock           sync.Mutex
-	pQueue         pq.PQ
-	peerTrackers   map[peer.ID]*peertracker.PeerTracker
-	frozenPeers    map[peer.ID]struct{}
-	hooks          []hookFunc
-	ignoreFreezing bool
-	taskMerger     peertracker.TaskMerger
+	lock                      sync.Mutex
+	peerComparator            peertracker.PeerComparator
+	taskComparator            peertask.QueueTaskComparator
+	pQueue                    pq.PQ
+	peerTrackers              map[peer.ID]*peertracker.PeerTracker
+	frozenPeers               map[peer.ID]struct{}
+	hooks                     []hookFunc
+	ignoreFreezing            bool
+	taskMerger                peertracker.TaskMerger
+	maxOutstandingWorkPerPeer int
 }
 
 // Option is a function that configures the peer task queue
@@ -59,6 +62,16 @@ func TaskMerger(tmfp peertracker.TaskMerger) Option {
 		previous := ptq.taskMerger
 		ptq.taskMerger = tmfp
 		return TaskMerger(previous)
+	}
+}
+
+// MaxOutstandingWorkPerPeer is an option that specifies how many tasks a peer can have outstanding
+// with the same Topic as an existing Topic.
+func MaxOutstandingWorkPerPeer(count int) Option {
+	return func(ptq *PeerTaskQueue) Option {
+		previous := ptq.maxOutstandingWorkPerPeer
+		ptq.maxOutstandingWorkPerPeer = count
+		return MaxOutstandingWorkPerPeer(previous)
 	}
 }
 
@@ -101,15 +114,40 @@ func OnPeerRemovedHook(onPeerRemovedHook func(p peer.ID)) Option {
 	return addHook(hook)
 }
 
+// PeerComparator is an option that specifies custom peer prioritization logic.
+func PeerComparator(pc peertracker.PeerComparator) Option {
+	return func(ptq *PeerTaskQueue) Option {
+		previous := ptq.peerComparator
+		ptq.peerComparator = pc
+		return PeerComparator(previous)
+	}
+}
+
+// TaskComparator is an option that specifies custom task prioritization logic.
+func TaskComparator(tc peertask.QueueTaskComparator) Option {
+	return func(ptq *PeerTaskQueue) Option {
+		previous := ptq.taskComparator
+		ptq.taskComparator = tc
+		return TaskComparator(previous)
+	}
+}
+
 // New creates a new PeerTaskQueue
 func New(options ...Option) *PeerTaskQueue {
 	ptq := &PeerTaskQueue{
-		peerTrackers: make(map[peer.ID]*peertracker.PeerTracker),
-		frozenPeers:  make(map[peer.ID]struct{}),
-		pQueue:       pq.New(peertracker.PeerCompare),
-		taskMerger:   &peertracker.DefaultTaskMerger{},
+		peerComparator: peertracker.DefaultPeerComparator,
+		peerTrackers:   make(map[peer.ID]*peertracker.PeerTracker),
+		frozenPeers:    make(map[peer.ID]struct{}),
+		taskMerger:     &peertracker.DefaultTaskMerger{},
 	}
 	ptq.Options(options...)
+	ptq.pQueue = pq.New(
+		func(a, b pq.Elem) bool {
+			pa := a.(*peertracker.PeerTracker)
+			pb := b.(*peertracker.PeerTracker)
+			return ptq.peerComparator(pa, pb)
+		},
+	)
 	return ptq
 }
 
@@ -132,6 +170,27 @@ func (ptq *PeerTaskQueue) callHooks(to peer.ID, event peerTaskQueueEvent) {
 	}
 }
 
+// PeerTaskQueueStats captures current stats about the task queue.
+type PeerTaskQueueStats struct {
+	NumPeers   int
+	NumActive  int
+	NumPending int
+}
+
+// Stats returns current stats about the task queue.
+func (ptq *PeerTaskQueue) Stats() *PeerTaskQueueStats {
+	ptq.lock.Lock()
+	defer ptq.lock.Unlock()
+
+	s := &PeerTaskQueueStats{NumPeers: len(ptq.peerTrackers)}
+	for _, t := range ptq.peerTrackers {
+		ts := t.Stats()
+		s.NumActive += ts.NumActive
+		s.NumPending += ts.NumPending
+	}
+	return s
+}
+
 // PushTasks adds a new group of tasks for the given peer to the queue
 func (ptq *PeerTaskQueue) PushTasks(to peer.ID, tasks ...peertask.Task) {
 	ptq.lock.Lock()
@@ -139,7 +198,11 @@ func (ptq *PeerTaskQueue) PushTasks(to peer.ID, tasks ...peertask.Task) {
 
 	peerTracker, ok := ptq.peerTrackers[to]
 	if !ok {
-		peerTracker = peertracker.New(to, ptq.taskMerger)
+		var opts []peertracker.Option
+		if ptq.taskComparator != nil {
+			opts = append(opts, peertracker.WithQueueTaskComparator(ptq.taskComparator))
+		}
+		peerTracker = peertracker.New(to, ptq.taskMerger, ptq.maxOutstandingWorkPerPeer, opts...)
 		ptq.pQueue.Push(peerTracker)
 		ptq.peerTrackers[to] = peerTracker
 		ptq.callHooks(to, peerAdded)
@@ -167,10 +230,8 @@ func (ptq *PeerTaskQueue) PopTasks(targetMinWork int) (peer.ID, []*peertask.Task
 		return "", nil, -1
 	}
 
-	var peerTracker *peertracker.PeerTracker
-
 	// Choose the highest priority peer
-	peerTracker = ptq.pQueue.Peek().(*peertracker.PeerTracker)
+	peerTracker := ptq.pQueue.Peek().(*peertracker.PeerTracker)
 	if peerTracker == nil {
 		return "", nil, -1
 	}

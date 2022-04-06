@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,12 +15,15 @@ import (
 	protocol "github.com/libp2p/go-libp2p-core/protocol"
 )
 
+var streamCounter int64
+
 // stream implements network.Stream
 type stream struct {
 	notifLk sync.Mutex
 
 	rstream *stream
 	conn    *conn
+	id      int64
 
 	write     *io.PipeWriter
 	read      *io.PipeReader
@@ -57,6 +61,7 @@ func newStream(w *io.PipeWriter, r *io.PipeReader, dir network.Direction) *strea
 	s := &stream{
 		read:      r,
 		write:     w,
+		id:        atomic.AddInt64(&streamCounter, 1),
 		reset:     make(chan struct{}, 1),
 		close:     make(chan struct{}, 1),
 		closed:    make(chan struct{}),
@@ -86,6 +91,10 @@ func (s *stream) Write(p []byte) (n int, err error) {
 	return len(p), nil
 }
 
+func (s *stream) ID() string {
+	return strconv.FormatInt(s.id, 10)
+}
+
 func (s *stream) Protocol() protocol.ID {
 	// Ignore type error. It means that the protocol is unset.
 	p, _ := s.protocol.Load().(protocol.ID)
@@ -100,7 +109,7 @@ func (s *stream) SetProtocol(proto protocol.ID) {
 	s.protocol.Store(proto)
 }
 
-func (s *stream) Close() error {
+func (s *stream) CloseWrite() error {
 	select {
 	case s.close <- struct{}{}:
 	default:
@@ -110,6 +119,15 @@ func (s *stream) Close() error {
 		return s.writeErr
 	}
 	return nil
+}
+
+func (s *stream) CloseRead() error {
+	return s.read.CloseWithError(ErrClosed)
+}
+
+func (s *stream) Close() error {
+	_ = s.CloseRead()
+	return s.CloseWrite()
 }
 
 func (s *stream) Reset() error {
@@ -249,7 +267,7 @@ func (s *stream) transport() {
 			return
 		case <-s.close:
 			if err := drainBuf(); err != nil {
-				s.resetWith(err)
+				s.cancelWrite(err)
 				return
 			}
 			s.writeErr = s.write.Close()
@@ -259,20 +277,19 @@ func (s *stream) transport() {
 			return
 		case o := <-s.toDeliver:
 			if err := deliverOrWait(o); err != nil {
-				s.resetWith(err)
+				s.cancelWrite(err)
 				return
 			}
 		case <-timer.C: // ok, due to write it out.
 			if err := drainBuf(); err != nil {
-				s.resetWith(err)
+				s.cancelWrite(err)
 				return
 			}
 		}
 	}
 }
 
-func (s *stream) resetWith(err error) {
+func (s *stream) cancelWrite(err error) {
 	s.write.CloseWithError(err)
-	s.read.CloseWithError(err)
 	s.writeErr = err
 }

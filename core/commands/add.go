@@ -10,12 +10,12 @@ import (
 
 	"github.com/ipfs/go-ipfs/core/commands/cmdenv"
 
+	"github.com/cheggaaa/pb"
 	cmds "github.com/ipfs/go-ipfs-cmds"
 	files "github.com/ipfs/go-ipfs-files"
 	coreiface "github.com/ipfs/interface-go-ipfs-core"
 	"github.com/ipfs/interface-go-ipfs-core/options"
 	mh "github.com/multiformats/go-multihash"
-	pb "gopkg.in/cheggaaa/pb.v1"
 )
 
 // ErrDepthLimitExceeded indicates that the max depth has been exceeded.
@@ -51,14 +51,18 @@ const adderOutChanSize = 8
 
 var AddCmd = &cmds.Command{
 	Helptext: cmds.HelpText{
-		Tagline: "Add a file or directory to ipfs.",
+		Tagline: "Add a file or directory to IPFS.",
 		ShortDescription: `
-Adds contents of <path> to ipfs. Use -r to add directories (recursively).
+Adds the content of <path> to IPFS. Use -r to add directories (recursively).
 `,
 		LongDescription: `
-Adds contents of <path> to ipfs. Use -r to add directories.
-Note that directories are added recursively, to form the ipfs
+Adds the content of <path> to IPFS. Use -r to add directories.
+Note that directories are added recursively, to form the IPFS
 MerkleDAG.
+
+If the daemon is not running, it will just add locally.
+If the daemon is started later, it will be advertised after a few
+seconds when the reprovider runs.
 
 The wrap option, '-w', wraps the file (or files, if using the
 recursive option) in a directory. This directory contains only
@@ -111,7 +115,7 @@ only-hash, and progress/status related flags) will change the final hash.
 	},
 
 	Arguments: []cmds.Argument{
-		cmds.FileArg("path", true, true, "The path to a file to be added to ipfs.").EnableRecursive().EnableStdin(),
+		cmds.FileArg("path", true, true, "The path to a file to be added to IPFS.").EnableRecursive().EnableStdin(),
 	},
 	Options: []cmds.Option{
 		cmds.OptionRecursivePath, // a builtin option that allows recursive paths (-r, --recursive)
@@ -129,10 +133,10 @@ only-hash, and progress/status related flags) will change the final hash.
 		cmds.BoolOption(wrapOptionName, "w", "Wrap files with a directory object."),
 		cmds.StringOption(chunkerOptionName, "s", "Chunking algorithm, size-[bytes], rabin-[min]-[avg]-[max] or buzhash").WithDefault("size-262144"),
 		cmds.BoolOption(pinOptionName, "Pin this object when adding.").WithDefault(true),
-		cmds.BoolOption(rawLeavesOptionName, "Use raw blocks for leaf nodes. (experimental)"),
+		cmds.BoolOption(rawLeavesOptionName, "Use raw blocks for leaf nodes."),
 		cmds.BoolOption(noCopyOptionName, "Add the file using filestore. Implies raw-leaves. (experimental)"),
 		cmds.BoolOption(fstoreCacheOptionName, "Check the filestore for pre-existing blocks. (experimental)"),
-		cmds.IntOption(cidVersionOptionName, "CID version. Defaults to 0 unless an option that depends on CIDv1 is passed. (experimental)"),
+		cmds.IntOption(cidVersionOptionName, "CID version. Defaults to 0 unless an option that depends on CIDv1 is passed. Passing version 1 will cause the raw-leaves option to default to true."),
 		cmds.StringOption(hashOptionName, "Hash function to use. Implies CIDv1 if not sha2-256. (experimental)").WithDefault("sha2-256"),
 		cmds.BoolOption(inlineOptionName, "Inline small blocks into CIDs. (experimental)"),
 		cmds.IntOption(inlineLimitOptionName, "Maximum block size to inline. (experimental)").WithDefault(32),
@@ -349,7 +353,7 @@ only-hash, and progress/status related flags) will change the final hash.
 							if quiet {
 								fmt.Fprintf(os.Stdout, "%s\n", output.Hash)
 							} else {
-								fmt.Fprintf(os.Stdout, "added %s %s\n", output.Hash, output.Name)
+								fmt.Fprintf(os.Stdout, "added %s %s\n", output.Hash, cmdenv.EscNonPrint(output.Name))
 							}
 
 						} else {

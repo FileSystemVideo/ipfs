@@ -6,15 +6,19 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 
 	cid "github.com/ipfs/go-cid"
 	util "github.com/ipld/go-car/util"
 	"github.com/ipld/go-ipld-prime"
-	dagpb "github.com/ipld/go-ipld-prime-proto"
-	ipldfree "github.com/ipld/go-ipld-prime/impl/free"
 	cidlink "github.com/ipld/go-ipld-prime/linking/cid"
+	basicnode "github.com/ipld/go-ipld-prime/node/basic"
 	"github.com/ipld/go-ipld-prime/traversal"
 	"github.com/ipld/go-ipld-prime/traversal/selector"
+
+	// The dag-pb and raw codecs are necessary for unixfs.
+	dagpb "github.com/ipld/go-codec-dagpb"
+	_ "github.com/ipld/go-ipld-prime/codec/raw"
 )
 
 // Dag is a root/selector combo to put into a car
@@ -37,6 +41,7 @@ type SelectiveCar struct {
 	ctx   context.Context
 	dags  []Dag
 	store ReadStore
+	opts  options
 }
 
 // OnCarHeaderFunc is called during traversal when the header is created
@@ -50,29 +55,32 @@ type OnNewCarBlockFunc func(Block) error
 // the Car file like size and number of blocks that go into it
 type SelectiveCarPrepared struct {
 	SelectiveCar
-	size   uint64
-	header CarHeader
-	cids   []cid.Cid
+	size               uint64
+	header             CarHeader
+	cids               []cid.Cid
+	userOnNewCarBlocks []OnNewCarBlockFunc
 }
 
 // NewSelectiveCar creates a new SelectiveCar for the given car file based
 // a block store and set of root+selector pairs
-func NewSelectiveCar(ctx context.Context, store ReadStore, dags []Dag) SelectiveCar {
+func NewSelectiveCar(ctx context.Context, store ReadStore, dags []Dag, opts ...Option) SelectiveCar {
 	return SelectiveCar{
 		ctx:   ctx,
 		store: store,
 		dags:  dags,
+		opts:  applyOptions(opts...),
 	}
 }
 
 func (sc SelectiveCar) traverse(onCarHeader OnCarHeaderFunc, onNewCarBlock OnNewCarBlockFunc) (uint64, error) {
-	traverser := &selectiveCarTraverser{onCarHeader, onNewCarBlock, 0, cid.NewSet(), sc}
+	traverser := &selectiveCarTraverser{onCarHeader, onNewCarBlock, 0, cid.NewSet(), sc, cidlink.DefaultLinkSystem()}
+	traverser.lsys.StorageReadOpener = traverser.loader
 	return traverser.traverse()
 }
 
 // Prepare traverse a car file and collects data on what is about to be written, but
 // does not actually write the file
-func (sc SelectiveCar) Prepare() (SelectiveCarPrepared, error) {
+func (sc SelectiveCar) Prepare(userOnNewCarBlocks ...OnNewCarBlockFunc) (SelectiveCarPrepared, error) {
 	var header CarHeader
 	var cids []cid.Cid
 
@@ -88,7 +96,7 @@ func (sc SelectiveCar) Prepare() (SelectiveCarPrepared, error) {
 	if err != nil {
 		return SelectiveCarPrepared{}, err
 	}
-	return SelectiveCarPrepared{sc, size, header, cids}, nil
+	return SelectiveCarPrepared{sc, size, header, cids, userOnNewCarBlocks}, nil
 }
 
 func (sc SelectiveCar) Write(w io.Writer, userOnNewCarBlocks ...OnNewCarBlockFunc) error {
@@ -133,6 +141,10 @@ func (sc SelectiveCarPrepared) Cids() []cid.Cid {
 // Dump writes the car file as quickly as possible based on information already
 // collected
 func (sc SelectiveCarPrepared) Dump(w io.Writer) error {
+	offset, err := HeaderSize(&sc.header)
+	if err != nil {
+		return fmt.Errorf("failed to size car header: %s", err)
+	}
 	if err := WriteHeader(&sc.header, w); err != nil {
 		return fmt.Errorf("failed to write car header: %s", err)
 	}
@@ -142,10 +154,23 @@ func (sc SelectiveCarPrepared) Dump(w io.Writer) error {
 			return err
 		}
 		raw := blk.RawData()
+		size := util.LdSize(c.Bytes(), raw)
 		err = util.LdWrite(w, c.Bytes(), raw)
 		if err != nil {
 			return err
 		}
+		for _, userOnNewCarBlock := range sc.userOnNewCarBlocks {
+			err := userOnNewCarBlock(Block{
+				BlockCID: c,
+				Data:     raw,
+				Offset:   offset,
+				Size:     size,
+			})
+			if err != nil {
+				return err
+			}
+		}
+		offset += size
 	}
 	return nil
 }
@@ -156,6 +181,7 @@ type selectiveCarTraverser struct {
 	offset        uint64
 	cidSet        *cid.Set
 	sc            SelectiveCar
+	lsys          ipld.LinkSystem
 }
 
 func (sct *selectiveCarTraverser) traverse() (uint64, error) {
@@ -191,10 +217,10 @@ func (sct *selectiveCarTraverser) traverseHeader() error {
 	return sct.onCarHeader(header)
 }
 
-func (sct *selectiveCarTraverser) loader(lnk ipld.Link, ctx ipld.LinkContext) (io.Reader, error) {
+func (sct *selectiveCarTraverser) loader(ctx ipld.LinkContext, lnk ipld.Link) (io.Reader, error) {
 	cl, ok := lnk.(cidlink.Link)
 	if !ok {
-		return nil, errors.New("Incorrect Link Type")
+		return nil, errors.New("incorrect link type")
 	}
 	c := cl.Cid
 	blk, err := sct.sc.store.Get(c)
@@ -220,10 +246,14 @@ func (sct *selectiveCarTraverser) loader(lnk ipld.Link, ctx ipld.LinkContext) (i
 }
 
 func (sct *selectiveCarTraverser) traverseBlocks() error {
-
-	nbc := dagpb.AddDagPBSupportToChooser(func(ipld.Link, ipld.LinkContext) ipld.NodeBuilder {
-		return ipldfree.NodeBuilder()
-	})
+	nsc := func(lnk ipld.Link, lctx ipld.LinkContext) (ipld.NodePrototype, error) {
+		// We can decode all nodes into basicnode's Any, except for
+		// dagpb nodes, which must explicitly use the PBNode prototype.
+		if lnk, ok := lnk.(cidlink.Link); ok && lnk.Cid.Prefix().Codec == 0x70 {
+			return dagpb.Type.PBNode, nil
+		}
+		return basicnode.Prototype.Any, nil
+	}
 
 	for _, carDag := range sct.sc.dags {
 		parsed, err := selector.ParseSelector(carDag.Selector)
@@ -231,18 +261,26 @@ func (sct *selectiveCarTraverser) traverseBlocks() error {
 			return err
 		}
 		lnk := cidlink.Link{Cid: carDag.Root}
-		nb := nbc(lnk, ipld.LinkContext{})
-		nd, err := lnk.Load(sct.sc.ctx, ipld.LinkContext{}, nb, sct.loader)
+		ns, _ := nsc(lnk, ipld.LinkContext{}) // nsc won't error
+		nd, err := sct.lsys.Load(ipld.LinkContext{Ctx: sct.sc.ctx}, lnk, ns)
 		if err != nil {
 			return err
 		}
-		err = traversal.Progress{
+		prog := traversal.Progress{
 			Cfg: &traversal.Config{
-				Ctx:                    sct.sc.ctx,
-				LinkLoader:             sct.loader,
-				LinkNodeBuilderChooser: nbc,
+				Ctx:                            sct.sc.ctx,
+				LinkSystem:                     sct.lsys,
+				LinkTargetNodePrototypeChooser: nsc,
+				LinkVisitOnlyOnce:              sct.sc.opts.TraverseLinksOnlyOnce,
 			},
-		}.WalkAdv(nd, parsed, func(traversal.Progress, ipld.Node, traversal.VisitReason) error { return nil })
+		}
+		if sct.sc.opts.MaxTraversalLinks < math.MaxInt64 {
+			prog.Budget = &traversal.Budget{
+				NodeBudget: math.MaxInt64,
+				LinkBudget: int64(sct.sc.opts.MaxTraversalLinks),
+			}
+		}
+		err = prog.WalkAdv(nd, parsed, func(traversal.Progress, ipld.Node, traversal.VisitReason) error { return nil })
 		if err != nil {
 			return err
 		}

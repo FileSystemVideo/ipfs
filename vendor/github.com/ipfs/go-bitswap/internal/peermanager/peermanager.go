@@ -18,6 +18,7 @@ type PeerQueue interface {
 	AddBroadcastWantHaves([]cid.Cid)
 	AddWants([]cid.Cid, []cid.Cid)
 	AddCancels([]cid.Cid)
+	ResponseReceived(ks []cid.Cid)
 	Startup()
 	Shutdown()
 }
@@ -51,9 +52,10 @@ type PeerManager struct {
 // New creates a new PeerManager, given a context and a peerQueueFactory.
 func New(ctx context.Context, createPeerQueue PeerQueueFactory, self peer.ID) *PeerManager {
 	wantGauge := metrics.NewCtx(ctx, "wantlist_total", "Number of items in wantlist.").Gauge()
+	wantBlockGauge := metrics.NewCtx(ctx, "want_blocks_total", "Number of want-blocks in wantlist.").Gauge()
 	return &PeerManager{
 		peerQueues:      make(map[peer.ID]PeerQueue),
-		pwm:             newPeerWantManager(wantGauge),
+		pwm:             newPeerWantManager(wantGauge, wantBlockGauge),
 		createPeerQueue: createPeerQueue,
 		ctx:             ctx,
 		self:            self,
@@ -89,9 +91,8 @@ func (pm *PeerManager) Connected(p peer.ID) {
 	pq := pm.getOrCreate(p)
 
 	// Inform the peer want manager that there's a new peer
-	wants := pm.pwm.addPeer(p)
-	// Broadcast any live want-haves to the newly connected peers
-	pq.AddBroadcastWantHaves(wants)
+	pm.pwm.addPeer(pq, p)
+
 	// Inform the sessions that the peer has connected
 	pm.signalAvailability(p, true)
 }
@@ -116,6 +117,19 @@ func (pm *PeerManager) Disconnected(p peer.ID) {
 	pm.pwm.removePeer(p)
 }
 
+// ResponseReceived is called when a message is received from the network.
+// ks is the set of blocks, HAVEs and DONT_HAVEs in the message
+// Note that this is just used to calculate latency.
+func (pm *PeerManager) ResponseReceived(p peer.ID, ks []cid.Cid) {
+	pm.pqLk.Lock()
+	pq, ok := pm.peerQueues[p]
+	pm.pqLk.Unlock()
+
+	if ok {
+		pq.ResponseReceived(ks)
+	}
+}
+
 // BroadcastWantHaves broadcasts want-haves to all peers (used by the session
 // to discover seeds).
 // For each peer it filters out want-haves that have previously been sent to
@@ -124,11 +138,7 @@ func (pm *PeerManager) BroadcastWantHaves(ctx context.Context, wantHaves []cid.C
 	pm.pqLk.Lock()
 	defer pm.pqLk.Unlock()
 
-	for p, ks := range pm.pwm.prepareBroadcastWantHaves(wantHaves) {
-		if pq, ok := pm.peerQueues[p]; ok {
-			pq.AddBroadcastWantHaves(ks)
-		}
-	}
+	pm.pwm.broadcastWantHaves(wantHaves)
 }
 
 // SendWants sends the given want-blocks and want-haves to the given peer.
@@ -137,9 +147,8 @@ func (pm *PeerManager) SendWants(ctx context.Context, p peer.ID, wantBlocks []ci
 	pm.pqLk.Lock()
 	defer pm.pqLk.Unlock()
 
-	if pq, ok := pm.peerQueues[p]; ok {
-		wblks, whvs := pm.pwm.prepareSendWants(p, wantBlocks, wantHaves)
-		pq.AddWants(wblks, whvs)
+	if _, ok := pm.peerQueues[p]; ok {
+		pm.pwm.sendWants(p, wantBlocks, wantHaves)
 	}
 }
 
@@ -150,11 +159,7 @@ func (pm *PeerManager) SendCancels(ctx context.Context, cancelKs []cid.Cid) {
 	defer pm.pqLk.Unlock()
 
 	// Send a CANCEL to each peer that has been sent a want-block or want-have
-	for p, ks := range pm.pwm.prepareSendCancels(cancelKs) {
-		if pq, ok := pm.peerQueues[p]; ok {
-			pq.AddCancels(ks)
-		}
-	}
+	pm.pwm.sendCancels(cancelKs)
 }
 
 // CurrentWants returns the list of pending wants (both want-haves and want-blocks).
@@ -193,7 +198,7 @@ func (pm *PeerManager) getOrCreate(p peer.ID) PeerQueue {
 
 // RegisterSession tells the PeerManager that the given session is interested
 // in events about the given peer.
-func (pm *PeerManager) RegisterSession(p peer.ID, s Session) bool {
+func (pm *PeerManager) RegisterSession(p peer.ID, s Session) {
 	pm.psLk.Lock()
 	defer pm.psLk.Unlock()
 
@@ -205,9 +210,6 @@ func (pm *PeerManager) RegisterSession(p peer.ID, s Session) bool {
 		pm.peerSessions[p] = make(map[uint64]struct{})
 	}
 	pm.peerSessions[p][s.ID()] = struct{}{}
-
-	_, ok := pm.peerQueues[p]
-	return ok
 }
 
 // UnregisterSession tells the PeerManager that the given session is no longer
@@ -229,6 +231,9 @@ func (pm *PeerManager) UnregisterSession(ses uint64) {
 // signalAvailability is called when a peer's connectivity changes.
 // It informs interested sessions.
 func (pm *PeerManager) signalAvailability(p peer.ID, isConnected bool) {
+	pm.psLk.Lock()
+	defer pm.psLk.Unlock()
+
 	sesIds, ok := pm.peerSessions[p]
 	if !ok {
 		return

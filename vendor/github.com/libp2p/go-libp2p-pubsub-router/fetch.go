@@ -5,16 +5,16 @@ import (
 	"errors"
 	"time"
 
-	ggio "github.com/gogo/protobuf/io"
-	"github.com/gogo/protobuf/proto"
-
-	"github.com/libp2p/go-libp2p-core/helpers"
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/protocol"
 
+	"github.com/libp2p/go-msgio/protoio"
+
 	pb "github.com/libp2p/go-libp2p-pubsub-router/pb"
+
+	"github.com/gogo/protobuf/proto"
 )
 
 const FetchProtoID = protocol.ID("/libp2p/fetch/0.0.1")
@@ -24,7 +24,7 @@ type fetchProtocol struct {
 	host host.Host
 }
 
-type getValue func(key string) ([]byte, error)
+type getValue func(ctx context.Context, key string) ([]byte, error)
 
 func newFetchProtocol(ctx context.Context, host host.Host, getData getValue) *fetchProtocol {
 	p := &fetchProtocol{ctx, host}
@@ -37,7 +37,7 @@ func newFetchProtocol(ctx context.Context, host host.Host, getData getValue) *fe
 }
 
 func (p *fetchProtocol) receive(s network.Stream, getData getValue) {
-	defer helpers.FullClose(s)
+	defer s.Close()
 
 	msg := &pb.FetchRequest{}
 	if err := readMsg(p.ctx, s, msg); err != nil {
@@ -46,7 +46,7 @@ func (p *fetchProtocol) receive(s network.Stream, getData getValue) {
 		return
 	}
 
-	response, err := getData(msg.Identifier)
+	response, err := getData(p.ctx, msg.Identifier)
 	var respProto pb.FetchResponse
 
 	if err != nil {
@@ -56,6 +56,7 @@ func (p *fetchProtocol) receive(s network.Stream, getData getValue) {
 	}
 
 	if err := writeMsg(p.ctx, s, &respProto); err != nil {
+		s.Reset()
 		return
 	}
 }
@@ -68,17 +69,23 @@ func (p *fetchProtocol) Fetch(ctx context.Context, pid peer.ID, key string) ([]b
 	if err != nil {
 		return nil, err
 	}
-	defer helpers.FullClose(s)
+	defer s.Close()
 
 	msg := &pb.FetchRequest{Identifier: key}
 
 	if err := writeMsg(ctx, s, msg); err != nil {
+		_ = s.Reset()
 		return nil, err
 	}
-	s.Close()
+
+	if err := s.CloseWrite(); err != nil {
+		_ = s.Reset()
+		return nil, err
+	}
 
 	response := &pb.FetchResponse{}
 	if err := readMsg(ctx, s, response); err != nil {
+		_ = s.Reset()
 		return nil, err
 	}
 
@@ -95,7 +102,7 @@ func (p *fetchProtocol) Fetch(ctx context.Context, pid peer.ID, key string) ([]b
 func writeMsg(ctx context.Context, s network.Stream, msg proto.Message) error {
 	done := make(chan error, 1)
 	go func() {
-		wc := ggio.NewDelimitedWriter(s)
+		wc := protoio.NewDelimitedWriter(s)
 
 		if err := wc.WriteMsg(msg); err != nil {
 			done <- err
@@ -113,7 +120,6 @@ func writeMsg(ctx context.Context, s network.Stream, msg proto.Message) error {
 	}
 
 	if retErr != nil {
-		s.Reset()
 		log.Infof("error writing response to %s: %s", s.Conn().RemotePeer(), retErr)
 	}
 	return retErr
@@ -122,7 +128,7 @@ func writeMsg(ctx context.Context, s network.Stream, msg proto.Message) error {
 func readMsg(ctx context.Context, s network.Stream, msg proto.Message) error {
 	done := make(chan error, 1)
 	go func() {
-		r := ggio.NewDelimitedReader(s, 1<<20)
+		r := protoio.NewDelimitedReader(s, 1<<20)
 		if err := r.ReadMsg(msg); err != nil {
 			done <- err
 			return

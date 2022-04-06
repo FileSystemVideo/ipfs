@@ -19,7 +19,7 @@ import (
 	goprocessctx "github.com/jbenet/goprocess/context"
 
 	p2putil "github.com/libp2p/go-libp2p-netutil"
-	pstoremem "github.com/libp2p/go-libp2p-peerstore/pstoremem"
+	"github.com/libp2p/go-libp2p-peerstore/pstoremem"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
@@ -92,7 +92,10 @@ func (mn *mocknet) AddPeer(k ic.PrivKey, a ma.Multiaddr) (host.Host, error) {
 		return nil, err
 	}
 
-	ps := pstoremem.NewPeerstore()
+	ps, err := pstoremem.NewPeerstore()
+	if err != nil {
+		return nil, err
+	}
 	ps.AddAddr(p, a, peerstore.PermanentAddrTTL)
 	ps.AddPrivKey(p, k)
 	ps.AddPubKey(p, k.GetPublic())
@@ -107,15 +110,18 @@ func (mn *mocknet) AddPeerWithPeerstore(p peer.ID, ps peerstore.Peerstore) (host
 	}
 
 	opts := &bhost.HostOpts{
-		NegotiationTimeout: -1,
+		NegotiationTimeout:      -1,
+		DisableSignedPeerRecord: true,
 	}
 
-	h, err := bhost.NewHost(mn.ctx, n, opts)
+	h, err := bhost.NewHost(n, opts)
 	if err != nil {
 		return nil, err
 	}
 
-	mn.proc.AddChild(n.proc)
+	// Ensure we close the hoset when we close the mock network.
+	// Otherwise, tests leak memory.
+	mn.proc.AddChild(goprocess.WithTeardown(h.Close))
 
 	mn.Lock()
 	mn.nets[n.peer] = n
@@ -230,11 +236,11 @@ func (mn *mocknet) validate(n network.Network) (*peernet, error) {
 
 	nr, ok := n.(*peernet)
 	if !ok {
-		return nil, fmt.Errorf("Network not supported (use mock package nets only)")
+		return nil, fmt.Errorf("network not supported (use mock package nets only)")
 	}
 
 	if _, found := mn.nets[nr.peer]; !found {
-		return nil, fmt.Errorf("Network not on mocknet. is it from another mocknet?")
+		return nil, fmt.Errorf("network not on mocknet. is it from another mocknet?")
 	}
 
 	return nr, nil

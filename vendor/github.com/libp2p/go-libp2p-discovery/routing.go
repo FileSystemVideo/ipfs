@@ -5,7 +5,7 @@ import (
 	"github.com/libp2p/go-libp2p-core/discovery"
 	"time"
 
-	cid "github.com/ipfs/go-cid"
+	"github.com/ipfs/go-cid"
 
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/routing"
@@ -13,7 +13,7 @@ import (
 	mh "github.com/multiformats/go-multihash"
 )
 
-// RoutingDiscovery is an implementation of discovery using ContentRouting
+// RoutingDiscovery is an implementation of discovery using ContentRouting.
 // Namespaces are translated to Cids using the SHA256 hash.
 type RoutingDiscovery struct {
 	routing.ContentRouting
@@ -23,8 +23,8 @@ func NewRoutingDiscovery(router routing.ContentRouting) *RoutingDiscovery {
 	return &RoutingDiscovery{router}
 }
 
-func (d *RoutingDiscovery) Advertise(ctx context.Context, ns string, opts ...Option) (time.Duration, error) {
-	var options Options
+func (d *RoutingDiscovery) Advertise(ctx context.Context, ns string, opts ...discovery.Option) (time.Duration, error) {
+	var options discovery.Options
 	err := options.Apply(opts...)
 	if err != nil {
 		return 0, err
@@ -56,8 +56,8 @@ func (d *RoutingDiscovery) Advertise(ctx context.Context, ns string, opts ...Opt
 	return ttl, nil
 }
 
-func (d *RoutingDiscovery) FindPeers(ctx context.Context, ns string, opts ...Option) (<-chan peer.AddrInfo, error) {
-	var options Options
+func (d *RoutingDiscovery) FindPeers(ctx context.Context, ns string, opts ...discovery.Option) (<-chan peer.AddrInfo, error) {
+	var options discovery.Options
 	err := options.Apply(opts...)
 	if err != nil {
 		return nil, err

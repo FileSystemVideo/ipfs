@@ -1,3 +1,4 @@
+//go:build windows
 // +build windows
 
 package files
@@ -19,7 +20,11 @@ func isHidden(fi os.FileInfo) bool {
 		return true
 	}
 
-	wi, ok := fi.Sys().(*windows.Win32FileAttributeData)
+	sys := fi.Sys()
+	if sys == nil {
+		return false
+	}
+	wi, ok := sys.(*windows.Win32FileAttributeData)
 	if !ok {
 		return false
 	}

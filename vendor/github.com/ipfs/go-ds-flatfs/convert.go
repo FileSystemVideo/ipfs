@@ -4,6 +4,7 @@
 package flatfs
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -59,7 +60,7 @@ func Move(oldPath string, newPath string, out io.Writer) error {
 	}
 	newDS.deactivate()
 
-	res, err := oldDS.Query(query.Query{KeysOnly: true})
+	res, err := oldDS.Query(context.Background(), query.Query{KeysOnly: true})
 	if err != nil {
 		return err
 	}
@@ -156,7 +157,7 @@ func Move(oldPath string, newPath string, out io.Writer) error {
 			// else we found something unexpected, so to be safe just move it
 			log.Warnw("found unexpected file in datastore directory, moving anyways", "file", fn)
 			newPath := filepath.Join(newDS.path, fn)
-			err := os.Rename(oldPath, newPath)
+			err := rename(oldPath, newPath)
 			if err != nil {
 				return err
 			}
@@ -177,7 +178,7 @@ func moveKey(oldDS *Datastore, newDS *Datastore, key datastore.Key) error {
 	if err != nil && !os.IsExist(err) {
 		return err
 	}
-	err = os.Rename(oldPath, newPath)
+	err = rename(oldPath, newPath)
 	if err != nil {
 		return err
 	}

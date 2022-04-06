@@ -5,14 +5,16 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ipfs/interface-go-ipfs-core"
+	"github.com/ipfs/go-cid"
+	iface "github.com/ipfs/interface-go-ipfs-core"
 	opt "github.com/ipfs/interface-go-ipfs-core/options"
+	mbase "github.com/multiformats/go-multibase"
 )
 
 func (tp *TestSuite) TestKey(t *testing.T) {
 	tp.hasApi(t, func(api iface.CoreAPI) error {
 		if api.Key() == nil {
-			return apiNotImplemented
+			return errAPINotImplemented
 		}
 		return nil
 	})
@@ -64,8 +66,8 @@ func (tp *TestSuite) TestListSelf(t *testing.T) {
 		t.Errorf("expected the key to be called 'self', got '%s'", keys[0].Name())
 	}
 
-	if keys[0].Path().String() != "/ipns/"+self.ID().Pretty() {
-		t.Errorf("expected the key to have path '/ipns/%s', got '%s'", self.ID().Pretty(), keys[0].Path().String())
+	if keys[0].Path().String() != "/ipns/"+iface.FormatKeyID(self.ID()) {
+		t.Errorf("expected the key to have path '/ipns/%s', got '%s'", iface.FormatKeyID(self.ID()), keys[0].Path().String())
 	}
 }
 
@@ -134,9 +136,30 @@ func (tp *TestSuite) TestGenerate(t *testing.T) {
 		t.Errorf("expected the key to be called 'foo', got '%s'", k.Name())
 	}
 
-	if !strings.HasPrefix(k.Path().String(), "/ipns/Qm") {
-		t.Errorf("expected the key to be prefixed with '/ipns/Qm', got '%s'", k.Path().String())
+	verifyIPNSPath(t, k.Path().String())
+}
+
+func verifyIPNSPath(t *testing.T, p string) bool {
+	t.Helper()
+	if !strings.HasPrefix(p, "/ipns/") {
+		t.Errorf("path %q does not look like an IPNS path", p)
+		return false
 	}
+	k := p[len("/ipns/"):]
+	c, err := cid.Decode(k)
+	if err != nil {
+		t.Errorf("failed to decode IPNS key %q (%v)", k, err)
+		return false
+	}
+	b36, err := c.StringOfBase(mbase.Base36)
+	if err != nil {
+		t.Fatalf("cid cannot format itself in b36")
+		return false
+	}
+	if b36 != k {
+		t.Errorf("IPNS key is not base36")
+	}
+	return true
 }
 
 func (tp *TestSuite) TestGenerateSize(t *testing.T) {
@@ -157,15 +180,14 @@ func (tp *TestSuite) TestGenerateSize(t *testing.T) {
 		t.Errorf("expected the key to be called 'foo', got '%s'", k.Name())
 	}
 
-	if !strings.HasPrefix(k.Path().String(), "/ipns/Qm") {
-		t.Errorf("expected the key to be prefixed with '/ipns/Qm', got '%s'", k.Path().String())
-	}
+	verifyIPNSPath(t, k.Path().String())
 }
 
 func (tp *TestSuite) TestGenerateType(t *testing.T) {
+	t.Skip("disabled until libp2p/specs#111 is fixed")
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	t.Skip("disabled until libp2p/specs#111 is fixed")
 
 	api, err := tp.makeAPI(ctx)
 	if err != nil {
@@ -256,15 +278,8 @@ func (tp *TestSuite) TestList(t *testing.T) {
 		return
 	}
 
-	if !strings.HasPrefix(l[0].Path().String(), "/ipns/Qm") {
-		t.Fatalf("expected key 0 to be prefixed with '/ipns/Qm', got '%s'", l[0].Name())
-		return
-	}
-
-	if !strings.HasPrefix(l[1].Path().String(), "/ipns/Qm") {
-		t.Fatalf("expected key 1 to be prefixed with '/ipns/Qm', got '%s'", l[1].Name())
-		return
-	}
+	verifyIPNSPath(t, l[0].Path().String())
+	verifyIPNSPath(t, l[1].Path().String())
 }
 
 func (tp *TestSuite) TestRename(t *testing.T) {

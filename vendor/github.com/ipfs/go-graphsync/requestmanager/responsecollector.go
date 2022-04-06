@@ -18,7 +18,9 @@ func (rc *responseCollector) collectResponses(
 	requestCtx context.Context,
 	incomingResponses <-chan graphsync.ResponseProgress,
 	incomingErrors <-chan error,
-	cancelRequest func()) (<-chan graphsync.ResponseProgress, <-chan error) {
+	cancelRequest func(),
+	onComplete func(),
+) (<-chan graphsync.ResponseProgress, <-chan error) {
 
 	returnedResponses := make(chan graphsync.ResponseProgress)
 	returnedErrors := make(chan error)
@@ -26,6 +28,7 @@ func (rc *responseCollector) collectResponses(
 	go func() {
 		var receivedResponses []graphsync.ResponseProgress
 		defer close(returnedResponses)
+		defer onComplete()
 		outgoingResponses := func() chan<- graphsync.ResponseProgress {
 			if len(receivedResponses) == 0 {
 				return nil
@@ -80,10 +83,24 @@ func (rc *responseCollector) collectResponses(
 			case <-rc.ctx.Done():
 				return
 			case <-requestCtx.Done():
+				select {
+				case <-rc.ctx.Done():
+				case returnedErrors <- graphsync.RequestClientCancelledErr{}:
+				}
 				return
 			case err, ok := <-incomingErrors:
 				if !ok {
 					incomingErrors = nil
+					// even if the `incomingErrors` channel is closed without any error,
+					// the context could still have timed out in which case we need to inform the caller of the same.
+					select {
+					case <-requestCtx.Done():
+						select {
+						case <-rc.ctx.Done():
+						case returnedErrors <- graphsync.RequestClientCancelledErr{}:
+						}
+					default:
+					}
 				} else {
 					receivedErrors = append(receivedErrors, err)
 				}

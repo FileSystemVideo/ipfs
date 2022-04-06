@@ -170,15 +170,18 @@ func allowUserAgent(r *http.Request, cfg *ServerConfig) bool {
 		return true
 	}
 
-	// Allow if the user agent does not start with Mozilla... (i.e. curl)
-	ua := r.Header.Get("User-agent")
-	if !strings.HasPrefix(ua, "Mozilla") {
-		return true
-	}
-
+	// Allow if the user agent does not start with Mozilla... (i.e. curl).
 	// Disallow otherwise.
 	//
 	// This means the request probably came from a browser and thus, it
 	// should have included Origin or referer headers.
-	return false
+	ua := r.Header.Get("User-agent")
+
+	// The fetch API in the Electron Renderer process sends no referer or
+	// origin but should be allowed
+	if strings.Contains(ua, "Electron") {
+		return true
+	}
+
+	return !strings.HasPrefix(ua, "Mozilla")
 }

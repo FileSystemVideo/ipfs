@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 
 	mbase "github.com/multiformats/go-multibase"
@@ -57,75 +58,84 @@ const (
 
 	GitRaw = 0x78
 
-	EthBlock           = 0x90
-	EthBlockList       = 0x91
-	EthTxTrie          = 0x92
-	EthTx              = 0x93
-	EthTxReceiptTrie   = 0x94
-	EthTxReceipt       = 0x95
-	EthStateTrie       = 0x96
-	EthAccountSnapshot = 0x97
-	EthStorageTrie     = 0x98
-	BitcoinBlock       = 0xb0
-	BitcoinTx          = 0xb1
-	ZcashBlock         = 0xc0
-	ZcashTx            = 0xc1
-	DecredBlock        = 0xe0
-	DecredTx           = 0xe1
-	DashBlock          = 0xf0
-	DashTx             = 0xf1
+	DagJOSE               = 0x85
+	EthBlock              = 0x90
+	EthBlockList          = 0x91
+	EthTxTrie             = 0x92
+	EthTx                 = 0x93
+	EthTxReceiptTrie      = 0x94
+	EthTxReceipt          = 0x95
+	EthStateTrie          = 0x96
+	EthAccountSnapshot    = 0x97
+	EthStorageTrie        = 0x98
+	BitcoinBlock          = 0xb0
+	BitcoinTx             = 0xb1
+	ZcashBlock            = 0xc0
+	ZcashTx               = 0xc1
+	DecredBlock           = 0xe0
+	DecredTx              = 0xe1
+	DashBlock             = 0xf0
+	DashTx                = 0xf1
+	FilCommitmentUnsealed = 0xf101
+	FilCommitmentSealed   = 0xf102
 )
 
 // Codecs maps the name of a codec to its type
 var Codecs = map[string]uint64{
-	"v0":                   DagProtobuf,
-	"raw":                  Raw,
-	"protobuf":             DagProtobuf,
-	"cbor":                 DagCBOR,
-	"libp2p-key":           Libp2pKey,
-	"git-raw":              GitRaw,
-	"eth-block":            EthBlock,
-	"eth-block-list":       EthBlockList,
-	"eth-tx-trie":          EthTxTrie,
-	"eth-tx":               EthTx,
-	"eth-tx-receipt-trie":  EthTxReceiptTrie,
-	"eth-tx-receipt":       EthTxReceipt,
-	"eth-state-trie":       EthStateTrie,
-	"eth-account-snapshot": EthAccountSnapshot,
-	"eth-storage-trie":     EthStorageTrie,
-	"bitcoin-block":        BitcoinBlock,
-	"bitcoin-tx":           BitcoinTx,
-	"zcash-block":          ZcashBlock,
-	"zcash-tx":             ZcashTx,
-	"decred-block":         DecredBlock,
-	"decred-tx":            DecredTx,
-	"dash-block":           DashBlock,
-	"dash-tx":              DashTx,
+	"v0":                      DagProtobuf,
+	"raw":                     Raw,
+	"protobuf":                DagProtobuf,
+	"cbor":                    DagCBOR,
+	"libp2p-key":              Libp2pKey,
+	"git-raw":                 GitRaw,
+	"eth-block":               EthBlock,
+	"eth-block-list":          EthBlockList,
+	"eth-tx-trie":             EthTxTrie,
+	"eth-tx":                  EthTx,
+	"eth-tx-receipt-trie":     EthTxReceiptTrie,
+	"eth-tx-receipt":          EthTxReceipt,
+	"eth-state-trie":          EthStateTrie,
+	"eth-account-snapshot":    EthAccountSnapshot,
+	"eth-storage-trie":        EthStorageTrie,
+	"bitcoin-block":           BitcoinBlock,
+	"bitcoin-tx":              BitcoinTx,
+	"zcash-block":             ZcashBlock,
+	"zcash-tx":                ZcashTx,
+	"decred-block":            DecredBlock,
+	"decred-tx":               DecredTx,
+	"dash-block":              DashBlock,
+	"dash-tx":                 DashTx,
+	"fil-commitment-unsealed": FilCommitmentUnsealed,
+	"fil-commitment-sealed":   FilCommitmentSealed,
+	"dag-jose":                DagJOSE,
 }
 
 // CodecToStr maps the numeric codec to its name
 var CodecToStr = map[uint64]string{
-	Raw:                "raw",
-	DagProtobuf:        "protobuf",
-	DagCBOR:            "cbor",
-	GitRaw:             "git-raw",
-	EthBlock:           "eth-block",
-	EthBlockList:       "eth-block-list",
-	EthTxTrie:          "eth-tx-trie",
-	EthTx:              "eth-tx",
-	EthTxReceiptTrie:   "eth-tx-receipt-trie",
-	EthTxReceipt:       "eth-tx-receipt",
-	EthStateTrie:       "eth-state-trie",
-	EthAccountSnapshot: "eth-account-snapshot",
-	EthStorageTrie:     "eth-storage-trie",
-	BitcoinBlock:       "bitcoin-block",
-	BitcoinTx:          "bitcoin-tx",
-	ZcashBlock:         "zcash-block",
-	ZcashTx:            "zcash-tx",
-	DecredBlock:        "decred-block",
-	DecredTx:           "decred-tx",
-	DashBlock:          "dash-block",
-	DashTx:             "dash-tx",
+	Raw:                   "raw",
+	DagProtobuf:           "protobuf",
+	DagCBOR:               "cbor",
+	GitRaw:                "git-raw",
+	EthBlock:              "eth-block",
+	EthBlockList:          "eth-block-list",
+	EthTxTrie:             "eth-tx-trie",
+	EthTx:                 "eth-tx",
+	EthTxReceiptTrie:      "eth-tx-receipt-trie",
+	EthTxReceipt:          "eth-tx-receipt",
+	EthStateTrie:          "eth-state-trie",
+	EthAccountSnapshot:    "eth-account-snapshot",
+	EthStorageTrie:        "eth-storage-trie",
+	BitcoinBlock:          "bitcoin-block",
+	BitcoinTx:             "bitcoin-tx",
+	ZcashBlock:            "zcash-block",
+	ZcashTx:               "zcash-tx",
+	DecredBlock:           "decred-block",
+	DecredTx:              "decred-tx",
+	DashBlock:             "dash-block",
+	DashTx:                "dash-tx",
+	FilCommitmentUnsealed: "fil-commitment-unsealed",
+	FilCommitmentSealed:   "fil-commitment-sealed",
+	DagJOSE:               "dag-jose",
 }
 
 // tryNewCidV0 tries to convert a multihash into a CIDv0 CID and returns an
@@ -175,10 +185,12 @@ func NewCidV1(codecType uint64, mhash mh.Multihash) Cid {
 	return Cid{string(buf[:n+hashlen])}
 }
 
-var _ encoding.BinaryMarshaler = Cid{}
-var _ encoding.BinaryUnmarshaler = (*Cid)(nil)
-var _ encoding.TextMarshaler = Cid{}
-var _ encoding.TextUnmarshaler = (*Cid)(nil)
+var (
+	_ encoding.BinaryMarshaler   = Cid{}
+	_ encoding.BinaryUnmarshaler = (*Cid)(nil)
+	_ encoding.TextMarshaler     = Cid{}
+	_ encoding.TextUnmarshaler   = (*Cid)(nil)
+)
 
 // Cid represents a self-describing content addressed
 // identifier. It is formed by a Version, a Codec (which indicates
@@ -337,8 +349,8 @@ func (c Cid) Type() uint64 {
 }
 
 // String returns the default string representation of a
-// Cid. Currently, Base58 is used as the encoding for the
-// multibase string.
+// Cid. Currently, Base32 is used for CIDV1 as the encoding for the
+// multibase string, Base58 is used for CIDV0.
 func (c Cid) String() string {
 	switch c.Version() {
 	case 0:
@@ -406,6 +418,30 @@ func (c Cid) Hash() mh.Multihash {
 // with Cast().
 func (c Cid) Bytes() []byte {
 	return []byte(c.str)
+}
+
+// ByteLen returns the length of the CID in bytes.
+// It's equivalent to `len(c.Bytes())`, but works without an allocation,
+// and should therefore be preferred.
+//
+// (See also the WriteTo method for other important operations that work without allocation.)
+func (c Cid) ByteLen() int {
+	return len(c.str)
+}
+
+// WriteBytes writes the CID bytes to the given writer.
+// This method works without incurring any allocation.
+//
+// (See also the ByteLen method for other important operations that work without allocation.)
+func (c Cid) WriteBytes(w io.Writer) (int, error) {
+	n, err := io.WriteString(w, c.str)
+	if err != nil {
+		return n, err
+	}
+	if n != len(c.str) {
+		return n, fmt.Errorf("failed to write entire cid string")
+	}
+	return n, nil
 }
 
 // MarshalBinary is equivalent to Bytes(). It implements the
@@ -487,12 +523,29 @@ func (c Cid) Loggable() map[string]interface{} {
 
 // Prefix builds and returns a Prefix out of a Cid.
 func (c Cid) Prefix() Prefix {
-	dec, _ := mh.Decode(c.Hash()) // assuming we got a valid multiaddr, this will not error
+	if c.Version() == 0 {
+		return Prefix{
+			MhType:   mh.SHA2_256,
+			MhLength: 32,
+			Version:  0,
+			Codec:    DagProtobuf,
+		}
+	}
+
+	offset := 0
+	version, n, _ := uvarint(c.str[offset:])
+	offset += n
+	codec, n, _ := uvarint(c.str[offset:])
+	offset += n
+	mhtype, n, _ := uvarint(c.str[offset:])
+	offset += n
+	mhlen, _, _ := uvarint(c.str[offset:])
+
 	return Prefix{
-		MhType:   dec.Code,
-		MhLength: dec.Length,
-		Version:  c.Version(),
-		Codec:    c.Type(),
+		MhType:   mhtype,
+		MhLength: int(mhlen),
+		Version:  version,
+		Codec:    codec,
 	}
 }
 
@@ -513,7 +566,7 @@ type Prefix struct {
 // and return a newly constructed Cid with the resulting multihash.
 func (p Prefix) Sum(data []byte) (Cid, error) {
 	length := p.MhLength
-	if p.MhType == mh.ID {
+	if p.MhType == mh.IDENTITY {
 		length = -1
 	}
 
@@ -626,4 +679,140 @@ func CidFromBytes(data []byte) (int, Cid, error) {
 	l := n + cn + mhnr
 
 	return l, Cid{string(data[0:l])}, nil
+}
+
+func toBufByteReader(r io.Reader, dst []byte) *bufByteReader {
+	// If the reader already implements ByteReader, use it directly.
+	// Otherwise, use a fallback that does 1-byte Reads.
+	if br, ok := r.(io.ByteReader); ok {
+		return &bufByteReader{direct: br, dst: dst}
+	}
+	return &bufByteReader{fallback: r, dst: dst}
+}
+
+type bufByteReader struct {
+	direct   io.ByteReader
+	fallback io.Reader
+
+	dst []byte
+}
+
+func (r *bufByteReader) ReadByte() (byte, error) {
+	// The underlying reader has ReadByte; use it.
+	if br := r.direct; br != nil {
+		b, err := br.ReadByte()
+		if err != nil {
+			return 0, err
+		}
+		r.dst = append(r.dst, b)
+		return b, nil
+	}
+
+	// Fall back to a one-byte Read.
+	// TODO: consider reading straight into dst,
+	// once we have benchmarks and if they prove that to be faster.
+	var p [1]byte
+	if _, err := io.ReadFull(r.fallback, p[:]); err != nil {
+		return 0, err
+	}
+	r.dst = append(r.dst, p[0])
+	return p[0], nil
+}
+
+// CidFromReader reads a precise number of bytes for a CID from a given reader.
+// It returns the number of bytes read, the CID, and any error encountered.
+// The number of bytes read is accurate even if a non-nil error is returned.
+//
+// It's recommended to supply a reader that buffers and implements io.ByteReader,
+// as CidFromReader has to do many single-byte reads to decode varints.
+// If the argument only implements io.Reader, single-byte Read calls are used instead.
+func CidFromReader(r io.Reader) (int, Cid, error) {
+	// 64 bytes is enough for any CIDv0,
+	// and it's enough for most CIDv1s in practice.
+	// If the digest is too long, we'll allocate more.
+	br := toBufByteReader(r, make([]byte, 0, 64))
+
+	// We read the first varint, to tell if this is a CIDv0 or a CIDv1.
+	// The varint package wants a io.ByteReader, so we must wrap our io.Reader.
+	vers, err := varint.ReadUvarint(br)
+	if err != nil {
+		return len(br.dst), Undef, err
+	}
+
+	// If we have a CIDv0, read the rest of the bytes and cast the buffer.
+	if vers == mh.SHA2_256 {
+		if n, err := io.ReadFull(r, br.dst[1:34]); err != nil {
+			return len(br.dst) + n, Undef, err
+		}
+
+		br.dst = br.dst[:34]
+		h, err := mh.Cast(br.dst)
+		if err != nil {
+			return len(br.dst), Undef, err
+		}
+
+		return len(br.dst), Cid{string(h)}, nil
+	}
+
+	if vers != 1 {
+		return len(br.dst), Undef, fmt.Errorf("expected 1 as the cid version number, got: %d", vers)
+	}
+
+	// CID block encoding multicodec.
+	_, err = varint.ReadUvarint(br)
+	if err != nil {
+		return len(br.dst), Undef, err
+	}
+
+	// We could replace most of the code below with go-multihash's ReadMultihash.
+	// Note that it would save code, but prevent reusing buffers.
+	// Plus, we already have a ByteReader now.
+	mhStart := len(br.dst)
+
+	// Multihash hash function code.
+	_, err = varint.ReadUvarint(br)
+	if err != nil {
+		return len(br.dst), Undef, err
+	}
+
+	// Multihash digest length.
+	mhl, err := varint.ReadUvarint(br)
+	if err != nil {
+		return len(br.dst), Undef, err
+	}
+
+	// Refuse to make large allocations to prevent OOMs due to bugs.
+	const maxDigestAlloc = 32 << 20 // 32MiB
+	if mhl > maxDigestAlloc {
+		return len(br.dst), Undef, fmt.Errorf("refusing to allocate %d bytes for a digest", mhl)
+	}
+
+	// Fine to convert mhl to int, given maxDigestAlloc.
+	prefixLength := len(br.dst)
+	cidLength := prefixLength + int(mhl)
+	if cidLength > cap(br.dst) {
+		// If the multihash digest doesn't fit in our initial 64 bytes,
+		// efficiently extend the slice via append+make.
+		br.dst = append(br.dst, make([]byte, cidLength-len(br.dst))...)
+	} else {
+		// The multihash digest fits inside our buffer,
+		// so just extend its capacity.
+		br.dst = br.dst[:cidLength]
+	}
+
+	if n, err := io.ReadFull(r, br.dst[prefixLength:cidLength]); err != nil {
+		// We can't use len(br.dst) here,
+		// as we've only read n bytes past prefixLength.
+		return prefixLength + n, Undef, err
+	}
+
+	// This simply ensures the multihash is valid.
+	// TODO: consider removing this bit, as it's probably redundant;
+	// for now, it helps ensure consistency with CidFromBytes.
+	_, _, err = mh.MHFromBytes(br.dst[mhStart:])
+	if err != nil {
+		return len(br.dst), Undef, err
+	}
+
+	return len(br.dst), Cid{string(br.dst)}, nil
 }

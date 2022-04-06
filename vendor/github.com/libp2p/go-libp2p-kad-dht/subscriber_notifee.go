@@ -1,18 +1,17 @@
 package dht
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/libp2p/go-libp2p-core/event"
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
-	"github.com/libp2p/go-libp2p-core/protocol"
 
 	"github.com/libp2p/go-eventbus"
 
-	ma "github.com/multiformats/go-multiaddr"
-
 	"github.com/jbenet/goprocess"
+	ma "github.com/multiformats/go-multiaddr"
 )
 
 // subscriberNotifee implements network.Notifee and also manages the subscriber to the event bus. We consume peer
@@ -58,13 +57,6 @@ func newSubscriberNotifiee(dht *IpfsDHT) (*subscriberNotifee, error) {
 	// register for network notifications
 	dht.host.Network().Notify(nn)
 
-	// Fill routing table with currently connected peers that are DHT servers
-	dht.plk.Lock()
-	defer dht.plk.Unlock()
-	for _, p := range dht.host.Network().Peers() {
-		dht.peerFound(dht.ctx, p, false)
-	}
-
 	return nn, nil
 }
 
@@ -87,9 +79,8 @@ func (nn *subscriberNotifee) subscribe(proc goprocess.Process) {
 				// with our new address to all peers we are connected to. However, we might not necessarily be connected
 				// to our closet peers & so in the true spirit of Zen, searching for ourself in the network really is the best way
 				// to to forge connections with those matter.
-				select {
-				case dht.triggerSelfLookup <- nil:
-				default:
+				if dht.autoRefresh || dht.testAddressUpdateProcessing {
+					dht.rtRefreshManager.RefreshNoWait()
 				}
 			case event.EvtPeerProtocolsUpdated:
 				handlePeerChangeEvent(dht, evt.Peer)
@@ -156,16 +147,26 @@ func handleLocalReachabilityChangedEvent(dht *IpfsDHT, e event.EvtLocalReachabil
 // supporting the primary protocols, we do not want to add peers that are speaking obsolete secondary protocols to our
 // routing table
 func (dht *IpfsDHT) validRTPeer(p peer.ID) (bool, error) {
-	protos, err := dht.peerstore.SupportsProtocols(p, protocol.ConvertToStrings(dht.protocols)...)
-	if len(protos) == 0 || err != nil {
+	b, err := dht.peerstore.FirstSupportedProtocol(p, dht.protocolsStrs...)
+	if len(b) == 0 || err != nil {
 		return false, err
 	}
 
-	return dht.routingTablePeerFilter == nil || dht.routingTablePeerFilter(dht, dht.Host().Network().ConnsToPeer(p)), nil
+	return dht.routingTablePeerFilter == nil || dht.routingTablePeerFilter(dht, p), nil
+}
+
+type disconnector interface {
+	OnDisconnect(ctx context.Context, p peer.ID)
 }
 
 func (nn *subscriberNotifee) Disconnected(n network.Network, v network.Conn) {
 	dht := nn.dht
+
+	ms, ok := dht.msgSender.(disconnector)
+	if !ok {
+		return
+	}
+
 	select {
 	case <-dht.Process().Closing():
 		return
@@ -183,26 +184,11 @@ func (nn *subscriberNotifee) Disconnected(n network.Network, v network.Conn) {
 		return
 	}
 
-	dht.smlk.Lock()
-	defer dht.smlk.Unlock()
-	ms, ok := dht.strmap[p]
-	if !ok {
-		return
-	}
-	delete(dht.strmap, p)
-
-	// Do this asynchronously as ms.lk can block for a while.
-	go func() {
-		if err := ms.lk.Lock(dht.Context()); err != nil {
-			return
-		}
-		defer ms.lk.Unlock()
-		ms.invalidate()
-	}()
+	ms.OnDisconnect(dht.Context(), p)
 }
 
-func (nn *subscriberNotifee) Connected(n network.Network, v network.Conn)      {}
-func (nn *subscriberNotifee) OpenedStream(n network.Network, v network.Stream) {}
-func (nn *subscriberNotifee) ClosedStream(n network.Network, v network.Stream) {}
-func (nn *subscriberNotifee) Listen(n network.Network, a ma.Multiaddr)         {}
-func (nn *subscriberNotifee) ListenClose(n network.Network, a ma.Multiaddr)    {}
+func (nn *subscriberNotifee) Connected(network.Network, network.Conn)      {}
+func (nn *subscriberNotifee) OpenedStream(network.Network, network.Stream) {}
+func (nn *subscriberNotifee) ClosedStream(network.Network, network.Stream) {}
+func (nn *subscriberNotifee) Listen(network.Network, ma.Multiaddr)         {}
+func (nn *subscriberNotifee) ListenClose(network.Network, ma.Multiaddr)    {}

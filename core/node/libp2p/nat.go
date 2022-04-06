@@ -3,7 +3,7 @@ package libp2p
 import (
 	"time"
 
-	"github.com/ipfs/go-ipfs-config"
+	config "github.com/ipfs/go-ipfs-config"
 	"github.com/libp2p/go-libp2p"
 )
 
@@ -13,30 +13,14 @@ func AutoNATService(throttle *config.AutoNATThrottleConfig) func() Libp2pOpts {
 	return func() (opts Libp2pOpts) {
 		opts.Opts = append(opts.Opts, libp2p.EnableNATService())
 		if throttle != nil {
-			global := throttle.GlobalLimit
-			peer := throttle.PeerLimit
-			interval := time.Duration(throttle.Interval)
-			if interval == 0 {
-				interval = time.Minute
-			}
 			opts.Opts = append(opts.Opts,
-				libp2p.AutoNATServiceRateLimit(global, peer, interval),
+				libp2p.AutoNATServiceRateLimit(
+					throttle.GlobalLimit,
+					throttle.PeerLimit,
+					throttle.Interval.WithDefault(time.Minute),
+				),
 			)
 		}
-		return opts
-	}
-}
-
-func ForceReachabilityPublic() func() Libp2pOpts {
-	return func() (opts Libp2pOpts) {
-		opts.Opts = append(opts.Opts, libp2p.ForceReachabilityPublic())
-		return opts
-	}
-}
-
-func EnableSeedServer() func() Libp2pOpts {
-	return func() (opts Libp2pOpts) {
-		opts.Opts = append(opts.Opts, libp2p.EnableSeedService())
 		return opts
 	}
 }

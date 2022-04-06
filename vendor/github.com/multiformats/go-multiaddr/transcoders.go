@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ipfs/go-cid"
 	mh "github.com/multiformats/go-multihash"
 )
 
@@ -136,12 +137,12 @@ var TranscoderOnion = NewTranscoderFromFunctions(onionStB, onionBtS, nil)
 func onionStB(s string) ([]byte, error) {
 	addr := strings.Split(s, ":")
 	if len(addr) != 2 {
-		return nil, fmt.Errorf("failed to parse onion addr: %s does not contain a port number.", s)
+		return nil, fmt.Errorf("failed to parse onion addr: %s does not contain a port number", s)
 	}
 
 	// onion address without the ".onion" substring
 	if len(addr[0]) != 16 {
-		return nil, fmt.Errorf("failed to parse onion addr: %s not a Tor onion address.", s)
+		return nil, fmt.Errorf("failed to parse onion addr: %s not a Tor onion address", s)
 	}
 	onionHostBytes, err := base32.StdEncoding.DecodeString(strings.ToUpper(addr[0]))
 	if err != nil {
@@ -179,7 +180,7 @@ var TranscoderOnion3 = NewTranscoderFromFunctions(onion3StB, onion3BtS, nil)
 func onion3StB(s string) ([]byte, error) {
 	addr := strings.Split(s, ":")
 	if len(addr) != 2 {
-		return nil, fmt.Errorf("failed to parse onion addr: %s does not contain a port number.", s)
+		return nil, fmt.Errorf("failed to parse onion addr: %s does not contain a port number", s)
 	}
 
 	// onion address without the ".onion" substring
@@ -227,7 +228,7 @@ func garlic64StB(s string) ([]byte, error) {
 	// i2p base64 address will be between 516 and 616 characters long, depending on
 	// certificate type
 	if len(s) < 516 || len(s) > 616 {
-		return nil, fmt.Errorf("failed to parse garlic addr: %s not an i2p base64 address. len: %d\n", s, len(s))
+		return nil, fmt.Errorf("failed to parse garlic addr: %s not an i2p base64 address. len: %d", s, len(s))
 	}
 	garlicHostBytes, err := garlicBase64Encoding.DecodeString(s)
 	if err != nil {
@@ -248,7 +249,7 @@ func garlic64BtS(b []byte) (string, error) {
 func garlic64Validate(b []byte) error {
 	// A garlic64 address will always be greater than 386 bytes long when encoded.
 	if len(b) < 386 {
-		return fmt.Errorf("failed to validate garlic addr: %s not an i2p base64 address. len: %d\n", b, len(b))
+		return fmt.Errorf("failed to validate garlic addr: %s not an i2p base64 address. len: %d", b, len(b))
 	}
 	return nil
 }
@@ -285,20 +286,36 @@ func garlic32Validate(b []byte) error {
 	// an i2p base64 for an Encrypted Leaseset v2 will be at least 35 bytes
 	// long other than that, they will be exactly 32 bytes
 	if len(b) < 35 && len(b) != 32 {
-		return fmt.Errorf("failed to validate garlic addr: %s not an i2p base32 address. len: %d\n", b, len(b))
+		return fmt.Errorf("failed to validate garlic addr: %s not an i2p base32 address. len: %d", b, len(b))
 	}
 	return nil
 }
 
 var TranscoderP2P = NewTranscoderFromFunctions(p2pStB, p2pBtS, p2pVal)
 
+// The encoded peer ID can either be a CID of a key or a raw multihash (identity
+// or sha256-256).
 func p2pStB(s string) ([]byte, error) {
-	// the address is a varint prefixed multihash string representation
-	m, err := mh.FromB58String(s)
+	// check if the address is a base58 encoded sha256 or identity multihash
+	if strings.HasPrefix(s, "Qm") || strings.HasPrefix(s, "1") {
+		m, err := mh.FromB58String(s)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse p2p addr: %s %s", s, err)
+		}
+		return m, nil
+	}
+
+	// check if the address is a CID
+	c, err := cid.Decode(s)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse p2p addr: %s %s", s, err)
 	}
-	return m, nil
+
+	if ty := c.Type(); ty == cid.Libp2pKey {
+		return c.Hash(), nil
+	} else {
+		return nil, fmt.Errorf("failed to parse p2p addr: %s has the invalid codec %d", s, ty)
+	}
 }
 
 func p2pVal(b []byte) error {

@@ -1,21 +1,27 @@
 package config
 
 import (
+	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"time"
 
-	ci "github.com/libp2p/go-libp2p-core/crypto"
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	"github.com/ipfs/interface-go-ipfs-core/options"
+	"github.com/libp2p/go-libp2p-core/crypto"
+	"github.com/libp2p/go-libp2p-core/peer"
 )
 
 func Init(out io.Writer, nBitsForKeypair int) (*Config, error) {
-	identity, err := identityConfig(out, nBitsForKeypair)
+	identity, err := CreateIdentity(out, []options.KeyGenerateOption{options.Key.Size(nBitsForKeypair)})
 	if err != nil {
 		return nil, err
 	}
 
+	return InitWithIdentity(identity)
+}
+
+func InitWithIdentity(identity Identity) (*Config, error) {
 	bootstrapPeers, err := DefaultBootstrapPeers()
 	if err != nil {
 		return nil, err
@@ -37,7 +43,7 @@ func Init(out io.Writer, nBitsForKeypair int) (*Config, error) {
 		Identity:  identity,
 		Discovery: Discovery{
 			MDNS: MDNS{
-				Enabled:  false,
+				Enabled:  true,
 				Interval: 10,
 			},
 		},
@@ -62,9 +68,9 @@ func Init(out io.Writer, nBitsForKeypair int) (*Config, error) {
 			NoFetch:      false,
 			PathPrefixes: []string{},
 			HTTPHeaders: map[string][]string{
-				"Access-Control-Allow-Origin":  []string{"*"},
-				"Access-Control-Allow-Methods": []string{"GET"},
-				"Access-Control-Allow-Headers": []string{"X-Requested-With", "Range", "User-Agent"},
+				"Access-Control-Allow-Origin":  {"*"},
+				"Access-Control-Allow-Methods": {"GET"},
+				"Access-Control-Allow-Headers": {"X-Requested-With", "Range", "User-Agent"},
 			},
 			APICommands: []string{},
 		},
@@ -79,48 +85,54 @@ func Init(out io.Writer, nBitsForKeypair int) (*Config, error) {
 				GracePeriod: DefaultConnMgrGracePeriod.String(),
 				Type:        "basic",
 			},
-			DisableRelay: true,
 		},
-		Experimental: Experiments{
-			QUIC: true,
+		Pinning: Pinning{
+			RemoteServices: map[string]RemotePinningService{},
 		},
-		//Plugins: Plugins{
-		//	Plugins: map[string]Plugin{
-		//		"SeedServer": Plugin{Disabled: false,Config: nil},
-		//	},
-		//},
+		DNS: DNS{
+			Resolvers: map[string]string{},
+		},
+		Migration: Migration{
+			DownloadSources: []string{},
+			Keep:            "",
+		},
 	}
 
 	return conf, nil
 }
 
-// 最高允许的链接数,超过该值会启动清理
-const DefaultConnMgrHighWater = 3000
+// DefaultConnMgrHighWater is the default value for the connection managers
+// 'high water' mark
+const DefaultConnMgrHighWater = 900
 
-// 最低允许的链接数，触发清理时，等于或低于该值会自动停止
-const DefaultConnMgrLowWater = 2000
+// DefaultConnMgrLowWater is the default value for the connection managers 'low
+// water' mark
+const DefaultConnMgrLowWater = 600
 
-// 连接管理器宽限期是指一个新打开的连接在被清理之前被给予的时间。
+// DefaultConnMgrGracePeriod is the default value for the connection managers
+// grace period
 const DefaultConnMgrGracePeriod = time.Second * 20
 
 func addressesConfig() Addresses {
 	return Addresses{
 		Swarm: []string{
+			"/ip4/0.0.0.0/tcp/4001",
+			"/ip6/::/tcp/4001",
 			"/ip4/0.0.0.0/udp/4001/quic",
-			// "/ip4/0.0.0.0/udp/4002/utp", // disabled for now.
-			//"/ip6/::/tcp/4001",
+			"/ip6/::/udp/4001/quic",
 		},
-		Announce:   []string{},
-		NoAnnounce: []string{},
-		API:        Strings{"/ip4/127.0.0.1/tcp/5001"},
-		Gateway:    Strings{"/ip4/127.0.0.1/tcp/11808"},
+		Announce:       []string{},
+		AppendAnnounce: []string{},
+		NoAnnounce:     []string{},
+		API:            Strings{"/ip4/127.0.0.1/tcp/5001"},
+		Gateway:        Strings{"/ip4/127.0.0.1/tcp/8080"},
 	}
 }
 
 // DefaultDatastoreConfig is an internal function exported to aid in testing.
 func DefaultDatastoreConfig() Datastore {
 	return Datastore{
-		StorageMax:         "100GB",
+		StorageMax:         "10GB",
 		StorageGCWatermark: 90, // 90%
 		GCPeriod:           "1h",
 		BloomFilterSize:    0,
@@ -170,24 +182,54 @@ func flatfsSpec() map[string]interface{} {
 	}
 }
 
-// identityConfig initializes a new identity.
-func identityConfig(out io.Writer, nbits int) (Identity, error) {
+// CreateIdentity initializes a new identity.
+func CreateIdentity(out io.Writer, opts []options.KeyGenerateOption) (Identity, error) {
 	// TODO guard higher up
 	ident := Identity{}
-	if nbits < ci.MinRsaKeyBits {
-		return ident, ci.ErrRsaKeyTooSmall
-	}
 
-	fmt.Fprintf(out, "generating %v-bit RSA keypair...", nbits)
-	sk, pk, err := ci.GenerateKeyPair(ci.RSA, nbits)
+	settings, err := options.KeyGenerateOptions(opts...)
 	if err != nil {
 		return ident, err
+	}
+
+	var sk crypto.PrivKey
+	var pk crypto.PubKey
+
+	switch settings.Algorithm {
+	case "rsa":
+		if settings.Size == -1 {
+			settings.Size = options.DefaultRSALen
+		}
+
+		fmt.Fprintf(out, "generating %d-bit RSA keypair...", settings.Size)
+
+		priv, pub, err := crypto.GenerateKeyPair(crypto.RSA, settings.Size)
+		if err != nil {
+			return ident, err
+		}
+
+		sk = priv
+		pk = pub
+	case "ed25519":
+		if settings.Size != -1 {
+			return ident, fmt.Errorf("number of key bits does not apply when using ed25519 keys")
+		}
+		fmt.Fprintf(out, "generating ED25519 keypair...")
+		priv, pub, err := crypto.GenerateEd25519Key(rand.Reader)
+		if err != nil {
+			return ident, err
+		}
+
+		sk = priv
+		pk = pub
+	default:
+		return ident, fmt.Errorf("unrecognized key type: %s", settings.Algorithm)
 	}
 	fmt.Fprintf(out, "done\n")
 
 	// currently storing key unencrypted. in the future we need to encrypt it.
 	// TODO(security)
-	skbytes, err := sk.Bytes()
+	skbytes, err := crypto.MarshalPrivateKey(sk)
 	if err != nil {
 		return ident, err
 	}

@@ -8,13 +8,12 @@ package network
 import (
 	"context"
 	"io"
+	"time"
 
-	"github.com/jbenet/goprocess"
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/peerstore"
 
 	ma "github.com/multiformats/go-multiaddr"
-	"time"
 )
 
 // MessageSizeMax is a soft (recommended) maximum for network messages.
@@ -35,6 +34,14 @@ const (
 	DirOutbound
 )
 
+func (d Direction) String() string {
+	str := [...]string{"Unknown", "Inbound", "Outbound"}
+	if d < 0 || int(d) >= len(str) {
+		return "(unrecognized)"
+	}
+	return str[d]
+}
+
 // Connectedness signals the capacity for a connection with a given node.
 // It is used to signal to services and other peers whether a node is reachable.
 type Connectedness int
@@ -54,35 +61,56 @@ const (
 	CannotConnect
 )
 
+func (c Connectedness) String() string {
+	str := [...]string{"NotConnected", "Connected", "CanConnect", "CannotConnect"}
+	if c < 0 || int(c) >= len(str) {
+		return "(unrecognized)"
+	}
+	return str[c]
+}
+
 // Reachability indicates how reachable a node is.
 type Reachability int
 
 const (
-	// ReachabilityUnknown 表示节点的可达性状态未知。
+	// ReachabilityUnknown indicates that the reachability status of the
+	// node is unknown.
 	ReachabilityUnknown Reachability = iota
 
-	// ReachabilityPublic 表示可从公用internet访问当前节点。
+	// ReachabilityPublic indicates that the node is reachable from the
+	// public internet.
 	ReachabilityPublic
 
-	// ReachabilityPrivate 表示无法从公用internet访问节点。
+	// ReachabilityPrivate indicates that the node is not reachable from the
+	// public internet.
 	//
-	// 注意: 这个节点仍然可以通过穿透到达。
+	// NOTE: This node may _still_ be reachable via relays.
 	ReachabilityPrivate
 )
 
+func (r Reachability) String() string {
+	str := [...]string{"Unknown", "Public", "Private"}
+	if r < 0 || int(r) >= len(str) {
+		return "(unrecognized)"
+	}
+	return str[r]
+}
+
 // Stat stores metadata pertaining to a given Stream/Conn.
 type Stat struct {
+	// Direction specifies whether this is an inbound or an outbound connection.
 	Direction Direction
-	Extra     map[interface{}]interface{}
+	// Opened is the timestamp when this connection was opened.
+	Opened time.Time
+	// Transient indicates that this connection is transient and may be closed soon.
+	Transient bool
+	// Extra stores additional metadata about this connection.
+	Extra map[interface{}]interface{}
 }
 
 // StreamHandler is the type of function used to listen for
 // streams opened by the remote side.
 type StreamHandler func(Stream)
-
-// ConnHandler is the type of function used to listen for
-// connections opened by the remote side.
-type ConnHandler func(Conn)
 
 // Network is the interface used to connect to the outside world.
 // It dials and listens for connections. it uses a Swarm to pool
@@ -95,10 +123,6 @@ type Network interface {
 	// SetStreamHandler sets the handler for new streams opened by the
 	// remote side. This operation is threadsafe.
 	SetStreamHandler(StreamHandler)
-
-	// SetConnHandler sets the handler for new connections opened by the
-	// remote side. This operation is threadsafe.
-	SetConnHandler(ConnHandler)
 
 	// NewStream returns a new stream to given peer p.
 	// If there is no connection to p, attempts to create one.
@@ -115,10 +139,7 @@ type Network interface {
 	// use the known local interfaces.
 	InterfaceListenAddresses() ([]ma.Multiaddr, error)
 
-	// Process returns the network's Process
-	Process() goprocess.Process
-
-	Ping(peer.ID,time.Duration) error
+	io.Closer
 }
 
 // Dialer represents a service that can dial out to peers

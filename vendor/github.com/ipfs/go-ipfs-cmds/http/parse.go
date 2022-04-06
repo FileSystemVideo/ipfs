@@ -10,9 +10,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ipfs/go-ipfs-cmds"
+	cmds "github.com/ipfs/go-ipfs-cmds"
 
-	"github.com/ipfs/go-ipfs-files"
+	files "github.com/ipfs/go-ipfs-files"
 	logging "github.com/ipfs/go-log"
 )
 
@@ -28,12 +28,19 @@ func parseRequest(r *http.Request, root *cmds.Command) (*cmds.Request, error) {
 		getPath    = pth[:len(pth)-1]
 	)
 
-	cmd, err := root.Get(getPath)
+	cmdPath, err := root.Resolve(getPath)
 	if err != nil {
 		// 404 if there is no command at that path
 		return nil, ErrNotFound
 	}
 
+	for _, c := range cmdPath {
+		if c.NoRemote {
+			return nil, ErrNotFound
+		}
+	}
+
+	cmd := cmdPath[len(cmdPath)-1]
 	sub := cmd.Subcommands[pth[len(pth)-1]]
 
 	if sub == nil {
@@ -49,17 +56,41 @@ func parseRequest(r *http.Request, root *cmds.Command) (*cmds.Request, error) {
 		cmd = sub
 	}
 
-	opts, stringArgs2 := parseOptions(r)
+	if cmd.NoRemote {
+		return nil, ErrNotFound
+	}
+
+	opts := make(map[string]interface{})
 	optDefs, err := root.GetOptions(pth)
 	if err != nil {
 		return nil, err
 	}
-	for k, v := range opts {
-		if optDef, ok := optDefs[k]; ok {
+
+	query := r.URL.Query()
+	// Note: len(v) is guaranteed by the above function to always be greater than 0
+	for k, v := range query {
+		if k == "arg" {
+			stringArgs = append(stringArgs, v...)
+		} else {
+			optDef, ok := optDefs[k]
+			if !ok {
+				opts[k] = v[0]
+				continue
+			}
+
 			name := optDef.Names()[0]
-			if k != name {
+			opts[name] = v
+
+			switch optType := optDef.Type(); optType {
+			case cmds.Strings:
 				opts[name] = v
-				delete(opts, k)
+			case cmds.Bool, cmds.Int, cmds.Int64, cmds.Uint, cmds.Uint64, cmds.Float, cmds.String:
+				if len(v) > 1 {
+					return nil, fmt.Errorf("expected key %s to have only a single value, received %v", name, v)
+				}
+				opts[name] = v[0]
+			default:
+				return nil, fmt.Errorf("unsupported option type. key: %s, type: %v", k, optType)
 			}
 		}
 	}
@@ -67,8 +98,6 @@ func parseRequest(r *http.Request, root *cmds.Command) (*cmds.Request, error) {
 	if _, ok := opts[cmds.EncLong]; !ok {
 		opts[cmds.EncLong] = cmds.JSON
 	}
-
-	stringArgs = append(stringArgs, stringArgs2...)
 
 	// count required argument definitions
 	numRequired := 0
@@ -133,7 +162,7 @@ func parseRequest(r *http.Request, root *cmds.Command) (*cmds.Request, error) {
 
 	// if there is a required filearg, error if no files were provided
 	if len(requiredFile) > 0 && f == nil {
-		return nil, fmt.Errorf("File argument '%s' is required", requiredFile)
+		return nil, fmt.Errorf("file argument '%s' is required", requiredFile)
 	}
 
 	ctx := logging.ContextWithLoggable(r.Context(), uuidLoggable())
@@ -149,23 +178,6 @@ func parseRequest(r *http.Request, root *cmds.Command) (*cmds.Request, error) {
 
 	err = req.FillDefaults()
 	return req, err
-}
-
-func parseOptions(r *http.Request) (map[string]interface{}, []string) {
-	opts := make(map[string]interface{})
-	var args []string
-
-	query := r.URL.Query()
-	for k, v := range query {
-		if k == "arg" {
-			args = v
-		} else {
-
-			opts[k] = v[0]
-		}
-	}
-
-	return opts, args
 }
 
 // parseResponse decodes a http.Response to create a cmds.Response

@@ -3,7 +3,7 @@ package commands
 import (
 	"testing"
 
-	"github.com/ipfs/go-ipfs/namesys"
+	"github.com/ipfs/go-namesys"
 
 	ipns "github.com/ipfs/go-ipns"
 	"github.com/libp2p/go-libp2p-core/test"
@@ -25,10 +25,10 @@ func TestKeyTranslation(t *testing.T) {
 	}
 
 	if pkk != pkname {
-		t.Fatal("keys didnt match!")
+		t.Fatal("keys didn't match!")
 	}
 
 	if ipnsk != ipnsname {
-		t.Fatal("keys didnt match!")
+		t.Fatal("keys didn't match!")
 	}
 }

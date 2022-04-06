@@ -23,8 +23,6 @@ type Closer interface {
 	Close()
 }
 
-var GlobalEnv cmds.Environment
-
 func Run(ctx context.Context, root *cmds.Command,
 	cmdline []string, stdin, stdout, stderr *os.File,
 	buildEnv cmds.MakeEnvironment, makeExecutor cmds.MakeExecutor) error {
@@ -106,20 +104,16 @@ func Run(ctx context.Context, root *cmds.Command,
 
 	cmd := req.Command
 
-	if GlobalEnv == nil {
-		env, err := buildEnv(req.Context, req)
-		if err != nil {
-			printErr(err)
-			return err
-		}
-		GlobalEnv = env
+	env, err := buildEnv(req.Context, req)
+	if err != nil {
+		printErr(err)
+		return err
 	}
-	//if c, ok := env.(Closer); ok {
-	//	defer c.Close()
-	//}
+	if c, ok := env.(Closer); ok {
+		defer c.Close()
+	}
 
-	//exctr, err := makeExecutor(req, env)
-	exctr, err := makeExecutor(req, GlobalEnv)
+	exctr, err := makeExecutor(req, env)
 	if err != nil {
 		printErr(err)
 		return err
@@ -140,7 +134,7 @@ func Run(ctx context.Context, root *cmds.Command,
 	}
 
 	// Execute the command.
-	err = exctr.Execute(req, re, GlobalEnv)
+	err = exctr.Execute(req, re, env)
 	// If we get an error here, don't bother reading the status from the
 	// response emitter. It may not even be closed.
 	if err != nil {

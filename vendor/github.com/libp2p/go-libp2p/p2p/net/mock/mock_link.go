@@ -34,15 +34,15 @@ func (l *link) newConnPair(dialer *peernet) (*conn, *conn) {
 	defer l.RUnlock()
 
 	parent := process.WithTeardown(func() error { return nil })
-	c1 := newConn(parent, l.nets[0], l.nets[1], l, network.DirOutbound)
-	c2 := newConn(parent, l.nets[1], l.nets[0], l, network.DirInbound)
-	c1.rconn = c2
-	c2.rconn = c1
-
-	if dialer == c1.net {
-		return c1, c2
+	target := l.nets[0]
+	if target == dialer {
+		target = l.nets[1]
 	}
-	return c2, c1
+	dc := newConn(parent, dialer, target, l, network.DirOutbound)
+	tc := newConn(parent, target, dialer, l, network.DirInbound)
+	dc.rconn = tc
+	tc.rconn = dc
+	return dc, tc
 }
 
 func (l *link) Networks() []network.Network {

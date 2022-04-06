@@ -15,16 +15,12 @@ import (
 // NOTE: This is here -- and not inside cmd/ipfs/init.go -- because of an
 // import dependency issue. TODO: move this into a config/default/ package.
 var DefaultBootstrapAddresses = []string{
-	//"/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
-	//"/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
-	//"/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
-	//"/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
-	//"/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ", // mars.i.ipfs.io
-	"/ip4/3.21.161.72/udp/4001/quic/p2p/QmPKrgbXygetwBJ3LGE1YJRy9PTvTiKvCVjE2DrmyLrj1s",
-	"/ip4/103.80.134.104/udp/4001/quic/p2p/QmUE8qrNYrq8jyvKtMeRKgkM2diE7jfBQtQ5kid83eDQFx",
-	"/ip4/47.95.39.183/udp/4001/quic/p2p/QmWSzS3KPavbkGj7HkKWUDWvQedtm45LWxzD8uUfrFp7iN",
-	"/ip4/139.9.69.145/udp/4001/quic/p2p/QmRrPe3r9uTQHFFaaQmdBEtYEUtGjju2SPGn23KEtqhDbf",
-	"/ip4/118.195.177.41/udp/4001/quic/p2p/QmQnRsB8Bfapn8LVxeiVmx17ipDNWL9MM3Jm2t1PYsCjkq",
+	"/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
+	"/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
+	"/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
+	"/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
+	"/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",      // mars.i.ipfs.io
+	"/ip4/104.131.131.82/udp/4001/quic/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ", // mars.i.ipfs.io
 }
 
 // ErrInvalidPeerAddr signals an address is not a valid peer address.
@@ -41,7 +37,7 @@ func DefaultBootstrapPeers() ([]peer.AddrInfo, error) {
 	ps, err := ParseBootstrapPeers(DefaultBootstrapAddresses)
 	if err != nil {
 		return nil, fmt.Errorf(`failed to parse hardcoded bootstrap peers: %s
-This is a problem with the ipfs codebase. Please report it to the dev team.`, err)
+This is a problem with the ipfs codebase. Please report it to the dev team`, err)
 	}
 	return ps, nil
 }

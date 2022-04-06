@@ -25,7 +25,7 @@ type expiringAddr struct {
 }
 
 func (e *expiringAddr) ExpiredBy(t time.Time) bool {
-	return t.After(e.Expires)
+	return !t.Before(e.Expires)
 }
 
 type peerRecordState struct {
@@ -68,7 +68,7 @@ func NewAddrBook() *memoryAddrBook {
 
 	ab := &memoryAddrBook{
 		segments: func() (ret addrSegments) {
-			for i, _ := range ret {
+			for i := range ret {
 				ret[i] = &addrSegment{
 					addrs:             make(map[peer.ID]map[string]*expiringAddr),
 					signedPeerRecords: make(map[peer.ID]*peerRecordState)}
@@ -136,7 +136,7 @@ func (mab *memoryAddrBook) PeersWithAddrs() peer.IDSlice {
 	for _, s := range mab.segments {
 		s.RLock()
 		for pid, amap := range s.addrs {
-			if amap != nil && len(amap) > 0 {
+			if len(amap) > 0 {
 				pidSet.Add(pid)
 			}
 		}
@@ -159,7 +159,7 @@ func (mab *memoryAddrBook) AddAddrs(p peer.ID, addrs []ma.Multiaddr, ttl time.Du
 	// if peerRec != nil {
 	// 	return
 	// }
-	mab.addAddrs(p, addrs, ttl, false)
+	mab.addAddrs(p, addrs, ttl)
 }
 
 // ConsumePeerRecord adds addresses from a signed peer.PeerRecord (contained in
@@ -178,37 +178,40 @@ func (mab *memoryAddrBook) ConsumePeerRecord(recordEnvelope *record.Envelope, tt
 		return false, fmt.Errorf("signing key does not match PeerID in PeerRecord")
 	}
 
-	// ensure seq is greater than last received
+	// ensure seq is greater than, or equal to, the last received
 	s := mab.segments.get(rec.PeerID)
 	s.Lock()
+	defer s.Unlock()
 	lastState, found := s.signedPeerRecords[rec.PeerID]
-	if found && lastState.Seq >= rec.Seq {
-		s.Unlock()
+	if found && lastState.Seq > rec.Seq {
 		return false, nil
 	}
 	s.signedPeerRecords[rec.PeerID] = &peerRecordState{
 		Envelope: recordEnvelope,
 		Seq:      rec.Seq,
 	}
-	s.Unlock() // need to release the lock, since addAddrs will try to take it
-	mab.addAddrs(rec.PeerID, rec.Addrs, ttl, true)
+	mab.addAddrsUnlocked(s, rec.PeerID, rec.Addrs, ttl, true)
 	return true, nil
 }
 
-func (mab *memoryAddrBook) addAddrs(p peer.ID, addrs []ma.Multiaddr, ttl time.Duration, signed bool) {
+func (mab *memoryAddrBook) addAddrs(p peer.ID, addrs []ma.Multiaddr, ttl time.Duration) {
 	if err := p.Validate(); err != nil {
-		log.Warningf("tried to set addrs for invalid peer ID %s: %s", p, err)
-		return
-	}
-
-	// 如果ttl为零，则退出。无事可做。
-	if ttl <= 0 {
+		log.Warnw("tried to set addrs for invalid peer ID", "peer", p, "error", err)
 		return
 	}
 
 	s := mab.segments.get(p)
 	s.Lock()
 	defer s.Unlock()
+
+	mab.addAddrsUnlocked(s, p, addrs, ttl, false)
+}
+
+func (mab *memoryAddrBook) addAddrsUnlocked(s *addrSegment, p peer.ID, addrs []ma.Multiaddr, ttl time.Duration, signed bool) {
+	// if ttl is zero, exit. nothing to do.
+	if ttl <= 0 {
+		return
+	}
 
 	amap, ok := s.addrs[p]
 	if !ok {
@@ -220,22 +223,23 @@ func (mab *memoryAddrBook) addAddrs(p peer.ID, addrs []ma.Multiaddr, ttl time.Du
 	addrSet := make(map[string]struct{}, len(addrs))
 	for _, addr := range addrs {
 		if addr == nil {
-			log.Warnf("was passed nil multiaddr for %s", p)
+			log.Warnw("was passed nil multiaddr", "peer", p)
 			continue
 		}
 		k := string(addr.Bytes())
 		addrSet[k] = struct{}{}
 
-		// 查找现有记录和函数参数之间的最高TTL和过期时间
-		a, found := amap[k] // 不会分配。
+		// find the highest TTL and Expiry time between
+		// existing records and function args
+		a, found := amap[k] // won't allocate.
 
 		if !found {
-			// 找不到，宣布吧。
+			// not found, announce it.
 			entry := &expiringAddr{Addr: addr, Expires: exp, TTL: ttl}
 			amap[k] = entry
 			mab.subManager.BroadcastAddr(p, addr)
 		} else {
-			// 将ttl 和  exp更新为新条目和现有条目之间的较大值
+			// update ttl & exp to whichever is greater between new and existing entry
 			if ttl > a.TTL {
 				a.TTL = ttl
 			}
@@ -246,23 +250,21 @@ func (mab *memoryAddrBook) addAddrs(p peer.ID, addrs []ma.Multiaddr, ttl time.Du
 	}
 }
 
-// 调用 mgr.SetAddrs(p, addr, ttl)
+// SetAddr calls mgr.SetAddrs(p, addr, ttl)
 func (mab *memoryAddrBook) SetAddr(p peer.ID, addr ma.Multiaddr, ttl time.Duration) {
 	if err := p.Validate(); err != nil {
-		log.Warningf("tried to set addrs for invalid peer ID %s: %s", p, err)
+		log.Warnw("tried to set addrs for invalid peer ID", "peer", p, "error", err)
 		return
 	}
 
 	mab.SetAddrs(p, []ma.Multiaddr{addr}, ttl)
 }
 
-
-// 设置地址的ttl。
-// 这将清除之前的所有TTL。
-// 当我们收到对地址有效性的最佳估计时，就使用这个方法。
+// SetAddrs sets the ttl on addresses. This clears any TTL there previously.
+// This is used when we receive the best estimate of the validity of an address.
 func (mab *memoryAddrBook) SetAddrs(p peer.ID, addrs []ma.Multiaddr, ttl time.Duration) {
 	if err := p.Validate(); err != nil {
-		log.Warningf("tried to set addrs for invalid peer ID %s: %s", p, err)
+		log.Warnw("tried to set addrs for invalid peer ID", "peer", p, "error", err)
 		return
 	}
 
@@ -279,7 +281,7 @@ func (mab *memoryAddrBook) SetAddrs(p peer.ID, addrs []ma.Multiaddr, ttl time.Du
 	exp := time.Now().Add(ttl)
 	for _, addr := range addrs {
 		if addr == nil {
-			log.Warnf("was passed nil multiaddr for %s", p)
+			log.Warnw("was passed nil multiaddr", "peer", p)
 			continue
 		}
 		aBytes := addr.Bytes()
@@ -293,18 +295,13 @@ func (mab *memoryAddrBook) SetAddrs(p peer.ID, addrs []ma.Multiaddr, ttl time.Du
 			delete(amap, key)
 		}
 	}
-
-	// if we've expired all the signed addresses for a peer, remove their signed routing state record
-	if len(amap) == 0 {
-		delete(s.signedPeerRecords, p)
-	}
 }
 
-
-// 将指定 peer 的指定 oldTTL 的地址更新为新的 newTTL。
+// UpdateAddrs updates the addresses associated with the given peer that have
+// the given oldTTL to have the given newTTL.
 func (mab *memoryAddrBook) UpdateAddrs(p peer.ID, oldTTL time.Duration, newTTL time.Duration) {
 	if err := p.Validate(); err != nil {
-		log.Warningf("tried to set addrs for invalid peer ID %s: %s", p, err)
+		log.Warnw("tried to set addrs for invalid peer ID", "peer", p, "error", err)
 		return
 	}
 
@@ -313,19 +310,20 @@ func (mab *memoryAddrBook) UpdateAddrs(p peer.ID, oldTTL time.Duration, newTTL t
 	defer s.Unlock()
 	exp := time.Now().Add(newTTL)
 	amap, found := s.addrs[p]
-	if found {
-		for k, a := range amap {
-			if oldTTL == a.TTL {
+	if !found {
+		return
+	}
+
+	for k, a := range amap {
+		if oldTTL == a.TTL {
+			if newTTL == 0 {
+				delete(amap, k)
+			} else {
 				a.TTL = newTTL
 				a.Expires = exp
 				amap[k] = a
 			}
 		}
-	}
-
-	// if we've expired all the signed addresses for a peer, remove their signed routing state record
-	if len(amap) == 0 {
-		delete(s.signedPeerRecords, p)
 	}
 }
 
@@ -400,10 +398,11 @@ func (mab *memoryAddrBook) ClearAddrs(p peer.ID) {
 	delete(s.signedPeerRecords, p)
 }
 
-// 返回一个通道，在该通道上为给定的对等ID发现的所有新地址都将被发布。
+// AddrStream returns a channel on which all new addresses discovered for a
+// given peer ID will be published.
 func (mab *memoryAddrBook) AddrStream(ctx context.Context, p peer.ID) <-chan ma.Multiaddr {
 	if err := p.Validate(); err != nil {
-		log.Warningf("tried to get addrs for invalid peer ID %s: %s", p, err)
+		log.Warnw("tried to set addrs for invalid peer ID", "peer", p, "error", err)
 		ch := make(chan ma.Multiaddr)
 		close(ch)
 		return ch
@@ -423,10 +422,8 @@ func (mab *memoryAddrBook) AddrStream(ctx context.Context, p peer.ID) <-chan ma.
 }
 
 type addrSub struct {
-	pubch  chan ma.Multiaddr
-	lk     sync.Mutex
-	buffer []ma.Multiaddr
-	ctx    context.Context
+	pubch chan ma.Multiaddr
+	ctx   context.Context
 }
 
 func (s *addrSub) pubAddr(a ma.Multiaddr) {
@@ -475,7 +472,7 @@ func (mgr *AddrSubManager) removeSub(p peer.ID, s *addrSub) {
 	}
 }
 
-// 向所有订阅的流广播新地址。
+// BroadcastAddr broadcasts a new address to all subscribed streams.
 func (mgr *AddrSubManager) BroadcastAddr(p peer.ID, addr ma.Multiaddr) {
 	mgr.mu.RLock()
 	defer mgr.mu.RUnlock()
@@ -487,17 +484,14 @@ func (mgr *AddrSubManager) BroadcastAddr(p peer.ID, addr ma.Multiaddr) {
 	}
 }
 
-// 为给定的对等ID创建一个新订阅，用文件中可能已有的任何地址预填充通道。
+// AddrStream creates a new subscription for a given peer ID, pre-populating the
+// channel with any addresses we might already have on file.
 func (mgr *AddrSubManager) AddrStream(ctx context.Context, p peer.ID, initial []ma.Multiaddr) <-chan ma.Multiaddr {
 	sub := &addrSub{pubch: make(chan ma.Multiaddr), ctx: ctx}
 	out := make(chan ma.Multiaddr)
 
 	mgr.mu.Lock()
-	if _, ok := mgr.subs[p]; ok {
-		mgr.subs[p] = append(mgr.subs[p], sub)
-	} else {
-		mgr.subs[p] = []*addrSub{sub}
-	}
+	mgr.subs[p] = append(mgr.subs[p], sub)
 	mgr.mu.Unlock()
 
 	sort.Sort(addr.AddrList(initial))

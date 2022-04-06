@@ -1,4 +1,5 @@
-FROM golang:1.13.10-buster
+# Note: when updating the go minor version here, also update the go-channel in snap/snapcraft.yml
+FROM golang:1.16.7-buster
 LABEL maintainer="Steven Allen <steven@stebalien.com>"
 
 # Install deps
@@ -23,7 +24,7 @@ ARG IPFS_PLUGINS
 # Build the thing.
 # Also: fix getting HEAD commit hash via git rev-parse.
 RUN cd $SRC_DIR \
-  && mkdir .git/objects \
+  && mkdir -p .git/objects \
   && make build GOTAGS=openssl IPFS_PLUGINS=$IPFS_PLUGINS
 
 # Get su-exec, a very minimal tool for dropping privileges,
@@ -33,14 +34,14 @@ ENV TINI_VERSION v0.19.0
 RUN set -eux; \
     dpkgArch="$(dpkg --print-architecture)"; \
     case "${dpkgArch##*-}" in \
-        "amd64" | "armhf" | "arm64") tiniArch="tini-$dpkgArch" ;;\
+        "amd64" | "armhf" | "arm64") tiniArch="tini-static-$dpkgArch" ;;\
         *) echo >&2 "unsupported architecture: ${dpkgArch}"; exit 1 ;; \
     esac; \
   cd /tmp \
   && git clone https://github.com/ncopa/su-exec.git \
   && cd su-exec \
   && git checkout -q $SUEXEC_VERSION \
-  && make \
+  && make su-exec-static \
   && cd /tmp \
   && wget -q -O tini https://github.com/krallin/tini/releases/download/$TINI_VERSION/$tiniArch \
   && chmod +x tini
@@ -53,7 +54,7 @@ LABEL maintainer="Steven Allen <steven@stebalien.com>"
 ENV SRC_DIR /go-ipfs
 COPY --from=0 $SRC_DIR/cmd/ipfs/ipfs /usr/local/bin/ipfs
 COPY --from=0 $SRC_DIR/bin/container_daemon /usr/local/bin/start_ipfs
-COPY --from=0 /tmp/su-exec/su-exec /sbin/su-exec
+COPY --from=0 /tmp/su-exec/su-exec-static /sbin/su-exec
 COPY --from=0 /tmp/tini /sbin/tini
 COPY --from=0 /bin/fusermount /usr/local/bin/fusermount
 COPY --from=0 /etc/ssl/certs /etc/ssl/certs
@@ -73,6 +74,8 @@ COPY --from=0 /usr/lib/*-linux-gnu*/libcrypto.so* /usr/lib/
 
 # Swarm TCP; should be exposed to the public
 EXPOSE 4001
+# Swarm UDP; should be exposed to the public
+EXPOSE 4001/udp
 # Daemon API; must not be exposed publicly but to client services under you control
 EXPOSE 5001
 # Web Gateway; can be exposed publicly with a proxy, e.g. as https://ipfs.example.org
@@ -103,5 +106,10 @@ ENV IPFS_LOGGING ""
 # 2. The API and Gateway are accessible from outside the container.
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/start_ipfs"]
 
+# Heathcheck for the container
+# QmUNLLsPACCz1vLxQVkXqqLX5R1X345qqfHbsf67hvA3Nn is the CID of empty folder
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD ipfs dag stat /ipfs/QmUNLLsPACCz1vLxQVkXqqLX5R1X345qqfHbsf67hvA3Nn || exit 1 
+
 # Execute the daemon subcommand by default
-CMD ["daemon", "--migrate=true"]
+CMD ["daemon", "--migrate=true", "--agent-version-suffix=docker"]

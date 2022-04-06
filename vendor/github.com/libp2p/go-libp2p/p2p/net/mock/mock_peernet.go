@@ -1,6 +1,7 @@
 package mocknet
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"math/rand"
@@ -31,7 +32,6 @@ type peernet struct {
 
 	// implement network.Network
 	streamHandler network.StreamHandler
-	connHandler   network.ConnHandler
 
 	notifmu sync.Mutex
 	notifs  map[network.Notifiee]struct{}
@@ -42,7 +42,6 @@ type peernet struct {
 
 // newPeernet constructs a new peernet
 func newPeernet(ctx context.Context, m *mocknet, p peer.ID, ps peerstore.Peerstore) (*peernet, error) {
-
 	n := &peernet{
 		mocknet: m,
 		peer:    p,
@@ -103,16 +102,6 @@ func (pn *peernet) handleNewStream(s network.Stream) {
 	}
 }
 
-// handleNewConn is an internal function to trigger the client's handler
-func (pn *peernet) handleNewConn(c network.Conn) {
-	pn.RLock()
-	handler := pn.connHandler
-	pn.RUnlock()
-	if handler != nil {
-		go handler(c)
-	}
-}
-
 // DialPeer attempts to establish a connection to a given peer.
 // Respects the context.
 func (pn *peernet) DialPeer(ctx context.Context, p peer.ID) (network.Conn, error) {
@@ -160,38 +149,56 @@ func (pn *peernet) connect(p peer.ID) (*conn, error) {
 func (pn *peernet) openConn(r peer.ID, l *link) *conn {
 	lc, rc := l.newConnPair(pn)
 	log.Debugf("%s opening connection to %s", pn.LocalPeer(), lc.RemotePeer())
+	addConnPair(pn, rc.net, lc, rc)
+
 	go rc.net.remoteOpenedConn(rc)
 	pn.addConn(lc)
 	return lc
 }
 
+// addConnPair adds connection to both peernets at the same time
+// must be followerd by pn1.addConn(c1) and pn2.addConn(c2)
+func addConnPair(pn1, pn2 *peernet, c1, c2 *conn) {
+	var l1, l2 = pn1, pn2 // peernets in lock order
+	// bytes compare as string compare is lexicographical
+	if bytes.Compare([]byte(l1.LocalPeer()), []byte(l2.LocalPeer())) > 0 {
+		l1, l2 = l2, l1
+	}
+
+	l1.Lock()
+	l2.Lock()
+
+	add := func(pn *peernet, c *conn) {
+		_, found := pn.connsByPeer[c.RemotePeer()]
+		if !found {
+			pn.connsByPeer[c.RemotePeer()] = map[*conn]struct{}{}
+		}
+		pn.connsByPeer[c.RemotePeer()][c] = struct{}{}
+
+		_, found = pn.connsByLink[c.link]
+		if !found {
+			pn.connsByLink[c.link] = map[*conn]struct{}{}
+		}
+		pn.connsByLink[c.link][c] = struct{}{}
+	}
+	add(pn1, c1)
+	add(pn2, c2)
+
+	c1.notifLk.Lock()
+	c2.notifLk.Lock()
+	l2.Unlock()
+	l1.Unlock()
+}
+
 func (pn *peernet) remoteOpenedConn(c *conn) {
 	log.Debugf("%s accepting connection from %s", pn.LocalPeer(), c.RemotePeer())
 	pn.addConn(c)
-	pn.handleNewConn(c)
 }
 
 // addConn constructs and adds a connection
 // to given remote peer over given link
 func (pn *peernet) addConn(c *conn) {
-	pn.Lock()
-
-	_, found := pn.connsByPeer[c.RemotePeer()]
-	if !found {
-		pn.connsByPeer[c.RemotePeer()] = map[*conn]struct{}{}
-	}
-	pn.connsByPeer[c.RemotePeer()][c] = struct{}{}
-
-	_, found = pn.connsByLink[c.link]
-	if !found {
-		pn.connsByLink[c.link] = map[*conn]struct{}{}
-	}
-	pn.connsByLink[c.link][c] = struct{}{}
-
-	c.notifLk.Lock()
 	defer c.notifLk.Unlock()
-	pn.Unlock()
-
 	// Call this after unlocking as it might cause us to immediately close
 	// the connection and remove it from the swarm.
 	c.setup()
@@ -339,7 +346,7 @@ func (pn *peernet) NewStream(ctx context.Context, p peer.ID) (network.Stream, er
 	if err != nil {
 		return nil, err
 	}
-	return c.NewStream()
+	return c.NewStream(ctx)
 }
 
 // SetStreamHandler sets the new stream handler on the Network.
@@ -347,14 +354,6 @@ func (pn *peernet) NewStream(ctx context.Context, p peer.ID) (network.Stream, er
 func (pn *peernet) SetStreamHandler(h network.StreamHandler) {
 	pn.Lock()
 	pn.streamHandler = h
-	pn.Unlock()
-}
-
-// SetConnHandler sets the new conn handler on the Network.
-// This operation is threadsafe.
-func (pn *peernet) SetConnHandler(h network.ConnHandler) {
-	pn.Lock()
-	pn.connHandler = h
 	pn.Unlock()
 }
 

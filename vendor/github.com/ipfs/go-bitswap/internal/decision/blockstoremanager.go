@@ -8,45 +8,59 @@ import (
 	blocks "github.com/ipfs/go-block-format"
 	cid "github.com/ipfs/go-cid"
 	bstore "github.com/ipfs/go-ipfs-blockstore"
+	"github.com/ipfs/go-metrics-interface"
 	process "github.com/jbenet/goprocess"
 )
 
 // blockstoreManager maintains a pool of workers that make requests to the blockstore.
 type blockstoreManager struct {
-	bs          bstore.Blockstore
-	workerCount int
-	jobs        chan func()
-	px          process.Process
+	bs           bstore.Blockstore
+	workerCount  int
+	jobs         chan func()
+	px           process.Process
+	pendingGauge metrics.Gauge
+	activeGauge  metrics.Gauge
 }
 
 // newBlockstoreManager creates a new blockstoreManager with the given context
 // and number of workers
-func newBlockstoreManager(ctx context.Context, bs bstore.Blockstore, workerCount int) *blockstoreManager {
+func newBlockstoreManager(
+	ctx context.Context,
+	bs bstore.Blockstore,
+	workerCount int,
+	pendingGauge metrics.Gauge,
+	activeGauge metrics.Gauge,
+) *blockstoreManager {
 	return &blockstoreManager{
-		bs:          bs,
-		workerCount: workerCount,
-		jobs:        make(chan func()),
+		bs:           bs,
+		workerCount:  workerCount,
+		jobs:         make(chan func()),
+		px:           process.WithTeardown(func() error { return nil }),
+		pendingGauge: pendingGauge,
+		activeGauge:  activeGauge,
 	}
 }
 
 func (bsm *blockstoreManager) start(px process.Process) {
-	bsm.px = px
-
+	px.AddChild(bsm.px)
 	// Start up workers
 	for i := 0; i < bsm.workerCount; i++ {
-		px.Go(func(px process.Process) {
-			bsm.worker()
+		bsm.px.Go(func(px process.Process) {
+			bsm.worker(px)
 		})
 	}
 }
 
-func (bsm *blockstoreManager) worker() {
+func (bsm *blockstoreManager) worker(px process.Process) {
 	for {
 		select {
-		case <-bsm.px.Closing():
+		case <-px.Closing():
 			return
 		case job := <-bsm.jobs:
+			bsm.pendingGauge.Dec()
+			bsm.activeGauge.Inc()
 			job()
+			bsm.activeGauge.Dec()
 		}
 	}
 }
@@ -58,6 +72,7 @@ func (bsm *blockstoreManager) addJob(ctx context.Context, job func()) error {
 	case <-bsm.px.Closing():
 		return fmt.Errorf("shutting down")
 	case bsm.jobs <- job:
+		bsm.pendingGauge.Inc()
 		return nil
 	}
 }
@@ -70,7 +85,7 @@ func (bsm *blockstoreManager) getBlockSizes(ctx context.Context, ks []cid.Cid) (
 
 	var lk sync.Mutex
 	return res, bsm.jobPerKey(ctx, ks, func(c cid.Cid) {
-		size, err := bsm.bs.GetSize(c)
+		size, err := bsm.bs.GetSize(ctx, c)
 		if err != nil {
 			if err != bstore.ErrNotFound {
 				// Note: this isn't a fatal error. We shouldn't abort the request
@@ -92,7 +107,7 @@ func (bsm *blockstoreManager) getBlocks(ctx context.Context, ks []cid.Cid) (map[
 
 	var lk sync.Mutex
 	return res, bsm.jobPerKey(ctx, ks, func(c cid.Cid) {
-		blk, err := bsm.bs.Get(c)
+		blk, err := bsm.bs.Get(ctx, c)
 		if err != nil {
 			if err != bstore.ErrNotFound {
 				// Note: this isn't a fatal error. We shouldn't abort the request

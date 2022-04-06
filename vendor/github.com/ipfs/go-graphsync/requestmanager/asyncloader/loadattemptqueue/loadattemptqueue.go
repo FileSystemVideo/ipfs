@@ -3,33 +3,37 @@ package loadattemptqueue
 import (
 	"errors"
 
+	"github.com/ipld/go-ipld-prime"
+	"github.com/libp2p/go-libp2p-core/peer"
+
 	"github.com/ipfs/go-graphsync"
 	"github.com/ipfs/go-graphsync/requestmanager/types"
-	"github.com/ipld/go-ipld-prime"
 )
 
 // LoadRequest is a request to load the given link for the given request id,
 // with results returned to the given channel
 type LoadRequest struct {
-	requestID  graphsync.RequestID
-	link       ipld.Link
-	resultChan chan types.AsyncLoadResult
+	p           peer.ID
+	requestID   graphsync.RequestID
+	link        ipld.Link
+	linkContext ipld.LinkContext
+	resultChan  chan types.AsyncLoadResult
 }
 
 // NewLoadRequest returns a new LoadRequest for the given request id, link,
 // and results channel
-func NewLoadRequest(requestID graphsync.RequestID,
+func NewLoadRequest(
+	p peer.ID,
+	requestID graphsync.RequestID,
 	link ipld.Link,
+	linkContext ipld.LinkContext,
 	resultChan chan types.AsyncLoadResult) LoadRequest {
-	return LoadRequest{requestID, link, resultChan}
+	return LoadRequest{p, requestID, link, linkContext, resultChan}
 }
 
 // LoadAttempter attempts to load a link to an array of bytes
-// it has three results:
-// bytes present, error nil = success
-// bytes nil, error present = error
-// bytes nil, error nil = did not load, but try again later
-type LoadAttempter func(graphsync.RequestID, ipld.Link) ([]byte, error)
+// and returns an async load result
+type LoadAttempter func(peer.ID, graphsync.RequestID, ipld.Link, ipld.LinkContext) types.AsyncLoadResult
 
 // LoadAttemptQueue attempts to load using the load attempter, and then can
 // place requests on a retry queue
@@ -48,14 +52,9 @@ func New(loadAttempter LoadAttempter) *LoadAttemptQueue {
 // AttemptLoad attempts to loads the given load request, and if retry is true
 // it saves the loadrequest for retrying later
 func (laq *LoadAttemptQueue) AttemptLoad(lr LoadRequest, retry bool) {
-	response, err := laq.loadAttempter(lr.requestID, lr.link)
-	if err != nil {
-		lr.resultChan <- types.AsyncLoadResult{Data: nil, Err: err}
-		close(lr.resultChan)
-		return
-	}
-	if response != nil {
-		lr.resultChan <- types.AsyncLoadResult{Data: response, Err: nil}
+	response := laq.loadAttempter(lr.p, lr.requestID, lr.link, lr.linkContext)
+	if response.Err != nil || response.Data != nil {
+		lr.resultChan <- response
 		close(lr.resultChan)
 		return
 	}

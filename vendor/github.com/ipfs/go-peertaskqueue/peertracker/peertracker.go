@@ -2,12 +2,14 @@ package peertracker
 
 import (
 	"sync"
-	"time"
 
+	"github.com/benbjohnson/clock"
 	pq "github.com/ipfs/go-ipfs-pq"
 	"github.com/ipfs/go-peertaskqueue/peertask"
 	peer "github.com/libp2p/go-libp2p-core/peer"
 )
+
+var clockInstance = clock.New()
 
 // TaskMerger is an interface that is used to merge new tasks into the active
 // and pending queues
@@ -15,7 +17,7 @@ type TaskMerger interface {
 	// HasNewInfo indicates whether the given task has more information than
 	// the existing group of tasks (which have the same Topic), and thus should
 	// be merged.
-	HasNewInfo(task peertask.Task, existing []peertask.Task) bool
+	HasNewInfo(task peertask.Task, existing []*peertask.Task) bool
 	// Merge copies relevant fields from a new task to an existing task.
 	Merge(task peertask.Task, existing *peertask.Task)
 }
@@ -24,7 +26,7 @@ type TaskMerger interface {
 // existing task (with the same Topic).
 type DefaultTaskMerger struct{}
 
-func (*DefaultTaskMerger) HasNewInfo(task peertask.Task, existing []peertask.Task) bool {
+func (*DefaultTaskMerger) HasNewInfo(task peertask.Task, existing []*peertask.Task) bool {
 	return false
 }
 
@@ -38,17 +40,21 @@ type PeerTracker struct {
 
 	// Tasks that are pending being made active
 	pendingTasks map[peertask.Topic]*peertask.QueueTask
-	// Tasks that have been made active
-	activeTasks map[*peertask.Task]struct{}
 
-	// activeWork must be locked around as it will be updated externally
-	activelk   sync.Mutex
-	activeWork int
+	activelk sync.Mutex
+	// Tasks that have been made active. Unfortuantely, we can have multiple for the same topic
+	// as we might get a "supperior" request after starting to handle the initial one.
+	activeTasks map[peertask.Topic][]*peertask.Task
+	activeWork  int
+
+	maxActiveWorkPerPeer int
 
 	// for the PQ interface
 	index int
 
 	freezeVal int
+
+	queueTaskComparator peertask.QueueTaskComparator
 
 	// priority queue of tasks belonging to this peer
 	taskQueue pq.PQ
@@ -56,23 +62,43 @@ type PeerTracker struct {
 	taskMerger TaskMerger
 }
 
-// New creates a new PeerTracker
-func New(target peer.ID, taskMerger TaskMerger) *PeerTracker {
-	return &PeerTracker{
-		target:       target,
-		taskQueue:    pq.New(peertask.WrapCompare(peertask.PriorityCompare)),
-		pendingTasks: make(map[peertask.Topic]*peertask.QueueTask),
-		activeTasks:  make(map[*peertask.Task]struct{}),
-		taskMerger:   taskMerger,
+// Option is a function that configures the peer tracker
+type Option func(*PeerTracker)
+
+// WithQueueTaskComparator sets a custom QueueTask comparison function for the
+// peer tracker's task queue.
+func WithQueueTaskComparator(f peertask.QueueTaskComparator) Option {
+	return func(pt *PeerTracker) {
+		pt.queueTaskComparator = f
 	}
 }
 
-// PeerCompare implements pq.ElemComparator
-// returns true if peer 'a' has higher priority than peer 'b'
-func PeerCompare(a, b pq.Elem) bool {
-	pa := a.(*PeerTracker)
-	pb := b.(*PeerTracker)
+// New creates a new PeerTracker
+func New(target peer.ID, taskMerger TaskMerger, maxActiveWorkPerPeer int, opts ...Option) *PeerTracker {
+	pt := &PeerTracker{
+		target:               target,
+		queueTaskComparator:  peertask.PriorityCompare,
+		pendingTasks:         make(map[peertask.Topic]*peertask.QueueTask),
+		activeTasks:          make(map[peertask.Topic][]*peertask.Task),
+		taskMerger:           taskMerger,
+		maxActiveWorkPerPeer: maxActiveWorkPerPeer,
+	}
 
+	for _, opt := range opts {
+		opt(pt)
+	}
+
+	pt.taskQueue = pq.New(peertask.WrapCompare(pt.queueTaskComparator))
+
+	return pt
+}
+
+// PeerComparator is used for peer prioritization.
+// It should return true if peer 'a' has higher priority than peer 'b'
+type PeerComparator func(a, b *PeerTracker) bool
+
+// DefaultPeerComparator implements the default peer prioritization logic.
+func DefaultPeerComparator(pa, pb *PeerTracker) bool {
 	// having no pending tasks means lowest priority
 	paPending := len(pa.pendingTasks)
 	pbPending := len(pb.pendingTasks)
@@ -103,6 +129,22 @@ func PeerCompare(a, b pq.Elem) bool {
 	return pa.activeWork < pb.activeWork
 }
 
+// TaskPriorityPeerComparator prioritizes peers based on their highest priority task.
+func TaskPriorityPeerComparator(comparator peertask.QueueTaskComparator) PeerComparator {
+	return func(pa, pb *PeerTracker) bool {
+		ta := pa.taskQueue.Peek()
+		tb := pb.taskQueue.Peek()
+		if ta == nil {
+			return false
+		}
+		if tb == nil {
+			return true
+		}
+
+		return comparator(ta.(*peertask.QueueTask), tb.(*peertask.QueueTask))
+	}
+}
+
 // Target returns the peer that this peer tracker tracks tasks for
 func (p *PeerTracker) Target() peer.ID {
 	return p.target
@@ -114,6 +156,19 @@ func (p *PeerTracker) IsIdle() bool {
 	defer p.activelk.Unlock()
 
 	return len(p.pendingTasks) == 0 && len(p.activeTasks) == 0
+}
+
+// PeerTrackerStats captures number of active and pending tasks for this peer.
+type PeerTrackerStats struct {
+	NumPending int
+	NumActive  int
+}
+
+// Stats returns current statistics for this peer.
+func (p *PeerTracker) Stats() *PeerTrackerStats {
+	p.activelk.Lock()
+	defer p.activelk.Unlock()
+	return &PeerTrackerStats{NumPending: len(p.pendingTasks), NumActive: len(p.activeTasks)}
 }
 
 // Index implements pq.Elem.
@@ -128,7 +183,7 @@ func (p *PeerTracker) SetIndex(i int) {
 
 // PushTasks adds a group of tasks onto a peer's queue
 func (p *PeerTracker) PushTasks(tasks ...peertask.Task) {
-	now := time.Now()
+	now := clockInstance.Now()
 
 	p.activelk.Lock()
 	defer p.activelk.Unlock()
@@ -172,6 +227,16 @@ func (p *PeerTracker) PopTasks(targetMinWork int) ([]*peertask.Task, int) {
 	var out []*peertask.Task
 	work := 0
 	for p.taskQueue.Len() > 0 && p.freezeVal == 0 && work < targetMinWork {
+		if p.maxActiveWorkPerPeer > 0 {
+			// Do not add work to a peer that is already maxed out
+			p.activelk.Lock()
+			activeWork := p.activeWork
+			p.activelk.Unlock()
+			if activeWork >= p.maxActiveWorkPerPeer {
+				break
+			}
+		}
+
 		// Pop the next task off the queue
 		t := p.taskQueue.Pop().(*peertask.QueueTask)
 
@@ -195,7 +260,7 @@ func (p *PeerTracker) startTask(task *peertask.Task) {
 
 	// Add task to active queue
 	if _, ok := p.activeTasks[task]; !ok {
-		p.activeTasks[task] = struct{}{}
+		p.activeTasks[task.Topic] = append(p.activeTasks[task.Topic], task)
 		p.activeWork += task.Work
 	}
 }
@@ -214,12 +279,33 @@ func (p *PeerTracker) TaskDone(task *peertask.Task) {
 	defer p.activelk.Unlock()
 
 	// Remove task from active queue
-	if _, ok := p.activeTasks[task]; ok {
-		delete(p.activeTasks, task)
-		p.activeWork -= task.Work
-		if p.activeWork < 0 {
-			panic("more tasks finished than started!")
+	activeTasks, ok := p.activeTasks[task.Topic]
+	if !ok {
+		return
+	}
+	// There will usually be 0 through 2 of these, so this should always be fast.
+	newTasks := activeTasks[:0]
+	for _, t := range activeTasks {
+		if task == t {
+			p.activeWork -= t.Work
+			continue
 		}
+		newTasks = append(newTasks, t)
+	}
+
+	if p.activeWork < 0 {
+		panic("more tasks finished than started!")
+	}
+
+	if len(newTasks) == 0 {
+		delete(p.activeTasks, task.Topic)
+	} else {
+		// Garbage collection.
+		for i := len(newTasks); i < len(activeTasks); i++ {
+			activeTasks[i] = nil
+		}
+
+		p.activeTasks[task.Topic] = newTasks
 	}
 }
 
@@ -259,12 +345,7 @@ func (p *PeerTracker) IsFrozen() bool {
 // Indicates whether the new task adds any more information over tasks that are
 // already in the active task queue
 func (p *PeerTracker) taskHasMoreInfoThanActiveTasks(task peertask.Task) bool {
-	var tasksWithTopic []peertask.Task
-	for at := range p.activeTasks {
-		if task.Topic == at.Topic {
-			tasksWithTopic = append(tasksWithTopic, *at)
-		}
-	}
+	tasksWithTopic := p.activeTasks[task.Topic]
 
 	// No tasks with that topic, so the new task adds information
 	if len(tasksWithTopic) == 0 {

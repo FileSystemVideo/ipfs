@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -12,14 +13,13 @@ import (
 
 	config "github.com/ipfs/go-ipfs-config"
 	files "github.com/ipfs/go-ipfs-files"
-	libp2p "github.com/ipfs/go-ipfs/core/node/libp2p"
 	icore "github.com/ipfs/interface-go-ipfs-core"
 	icorepath "github.com/ipfs/interface-go-ipfs-core/path"
-	peerstore "github.com/libp2p/go-libp2p-peerstore"
 	ma "github.com/multiformats/go-multiaddr"
 
 	"github.com/ipfs/go-ipfs/core"
 	"github.com/ipfs/go-ipfs/core/coreapi"
+	"github.com/ipfs/go-ipfs/core/node/libp2p"
 	"github.com/ipfs/go-ipfs/plugin/loader" // This package is needed so that all the preloaded plugins are loaded automatically
 	"github.com/ipfs/go-ipfs/repo/fsrepo"
 	"github.com/libp2p/go-libp2p-core/peer"
@@ -46,7 +46,7 @@ func setupPlugins(externalPluginsPath string) error {
 	return nil
 }
 
-func createTempRepo(ctx context.Context) (string, error) {
+func createTempRepo() (string, error) {
 	repoPath, err := ioutil.TempDir("", "ipfs-shell")
 	if err != nil {
 		return "", fmt.Errorf("failed to get temp dir: %s", err)
@@ -56,6 +56,22 @@ func createTempRepo(ctx context.Context) (string, error) {
 	cfg, err := config.Init(ioutil.Discard, 2048)
 	if err != nil {
 		return "", err
+	}
+
+	// When creating the repository, you can define custom settings on the repository, such as enabling experimental
+	// features (See experimental-features.md) or customizing the gateway endpoint.
+	// To do such things, you should modify the variable `cfg`. For example:
+	if *flagExp {
+		// https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#ipfs-filestore
+		cfg.Experimental.FilestoreEnabled = true
+		// https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#ipfs-urlstore
+		cfg.Experimental.UrlstoreEnabled = true
+		// https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#ipfs-p2p
+		cfg.Experimental.Libp2pStreamMounting = true
+		// https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#p2p-http-proxy
+		cfg.Experimental.P2pHttpProxy = true
+		// https://github.com/ipfs/go-ipfs/blob/master/docs/experimental-features.md#strategic-providing
+		cfg.Experimental.StrategicProviding = true
 	}
 
 	// Create the repo with the config
@@ -118,7 +134,7 @@ func spawnEphemeral(ctx context.Context) (icore.CoreAPI, error) {
 	}
 
 	// Create a Temporary Repo
-	repoPath, err := createTempRepo(ctx)
+	repoPath, err := createTempRepo()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create temp repo: %s", err)
 	}
@@ -131,19 +147,19 @@ func spawnEphemeral(ctx context.Context) (icore.CoreAPI, error) {
 
 func connectToPeers(ctx context.Context, ipfs icore.CoreAPI, peers []string) error {
 	var wg sync.WaitGroup
-	peerInfos := make(map[peer.ID]*peerstore.PeerInfo, len(peers))
+	peerInfos := make(map[peer.ID]*peer.AddrInfo, len(peers))
 	for _, addrStr := range peers {
 		addr, err := ma.NewMultiaddr(addrStr)
 		if err != nil {
 			return err
 		}
-		pii, err := peerstore.InfoFromP2pAddr(addr)
+		pii, err := peer.AddrInfoFromP2pAddr(addr)
 		if err != nil {
 			return err
 		}
 		pi, ok := peerInfos[pii.ID]
 		if !ok {
-			pi = &peerstore.PeerInfo{ID: pii.ID}
+			pi = &peer.AddrInfo{ID: pii.ID}
 			peerInfos[pi.ID] = pi
 		}
 		pi.Addrs = append(pi.Addrs, pii.Addrs...)
@@ -151,7 +167,7 @@ func connectToPeers(ctx context.Context, ipfs icore.CoreAPI, peers []string) err
 
 	wg.Add(len(peerInfos))
 	for _, peerInfo := range peerInfos {
-		go func(peerInfo *peerstore.PeerInfo) {
+		go func(peerInfo *peer.AddrInfo) {
 			defer wg.Done()
 			err := ipfs.Swarm().Connect(ctx, *peerInfo)
 			if err != nil {
@@ -199,7 +215,11 @@ func getUnixfsNode(path string) (files.Node, error) {
 
 /// -------
 
+var flagExp = flag.Bool("experimental", false, "enable experimental features")
+
 func main() {
+	flag.Parse()
+
 	/// --- Part I: Getting a IPFS node running
 
 	fmt.Println("-- Getting an IPFS node running -- ")
@@ -212,7 +232,7 @@ func main() {
 		fmt.Println("Spawning node on default repo")
 		ipfs, err := spawnDefault(ctx)
 		if err != nil {
-			fmt.Println("No IPFS repo available on the default path")
+			panic(fmt.Errorf("failed to spawnDefault node: %s", err))
 		}
 	*/
 
@@ -229,7 +249,7 @@ func main() {
 
 	fmt.Println("\n-- Adding and getting back files & directories --")
 
-	inputBasePath := "./example-folder/"
+	inputBasePath := "../example-folder/"
 	inputPathFile := inputBasePath + "ipfs.paper.draft3.pdf"
 	inputPathDirectory := inputBasePath + "test-dir"
 
@@ -259,7 +279,11 @@ func main() {
 
 	/// --- Part III: Getting the file and directory you added back
 
-	outputBasePath := "./example-folder/"
+	outputBasePath, err := ioutil.TempDir("", "example")
+	if err != nil {
+		panic(fmt.Errorf("could not create output dir (%v)", err))
+	}
+	fmt.Printf("output folder: %s\n", outputBasePath)
 	outputPathFile := outputBasePath + strings.Split(cidFile.String(), "/")[2]
 	outputPathDirectory := outputBasePath + strings.Split(cidDirectory.String(), "/")[2]
 
@@ -300,15 +324,25 @@ func main() {
 
 		// IPFS Cluster Pinning nodes
 		"/ip4/138.201.67.219/tcp/4001/p2p/QmUd6zHcbkbcs7SMxwLs48qZVX3vpcM8errYS7xEczwRMA",
+		"/ip4/138.201.67.219/udp/4001/quic/p2p/QmUd6zHcbkbcs7SMxwLs48qZVX3vpcM8errYS7xEczwRMA",
 		"/ip4/138.201.67.220/tcp/4001/p2p/QmNSYxZAiJHeLdkBg38roksAR9So7Y5eojks1yjEcUtZ7i",
+		"/ip4/138.201.67.220/udp/4001/quic/p2p/QmNSYxZAiJHeLdkBg38roksAR9So7Y5eojks1yjEcUtZ7i",
 		"/ip4/138.201.68.74/tcp/4001/p2p/QmdnXwLrC8p1ueiq2Qya8joNvk3TVVDAut7PrikmZwubtR",
+		"/ip4/138.201.68.74/udp/4001/quic/p2p/QmdnXwLrC8p1ueiq2Qya8joNvk3TVVDAut7PrikmZwubtR",
 		"/ip4/94.130.135.167/tcp/4001/p2p/QmUEMvxS2e7iDrereVYc5SWPauXPyNwxcy9BXZrC1QTcHE",
+		"/ip4/94.130.135.167/udp/4001/quic/p2p/QmUEMvxS2e7iDrereVYc5SWPauXPyNwxcy9BXZrC1QTcHE",
 
 		// You can add more nodes here, for example, another IPFS node you might have running locally, mine was:
 		// "/ip4/127.0.0.1/tcp/4010/p2p/QmZp2fhDLxjYue2RiUvLwT9MWdnbDxam32qYFnGmxZDh5L",
+		// "/ip4/127.0.0.1/udp/4010/quic/p2p/QmZp2fhDLxjYue2RiUvLwT9MWdnbDxam32qYFnGmxZDh5L",
 	}
 
-	go connectToPeers(ctx, ipfs, bootstrapNodes)
+	go func() {
+		err := connectToPeers(ctx, ipfs, bootstrapNodes)
+		if err != nil {
+			log.Printf("failed connect to peers: %s", err)
+		}
+	}()
 
 	exampleCIDStr := "QmUaoioqU7bxezBQZkUcgcSyokatMY71sxsALxQmRRrHrj"
 

@@ -1,69 +1,69 @@
 package schema
 
 import (
-	ipld "github.com/ipld/go-ipld-prime"
+	"github.com/ipld/go-ipld-prime/datamodel"
 )
 
-// Kind is an enum of kind in the IPLD Schema system.
+// TypeKind is an enum of kind in the IPLD Schema system.
 //
-// Note that schema.Kind is distinct from ipld.ReprKind!
+// Note that schema.TypeKind is distinct from datamodel.Kind!
 // Schema kinds include concepts such as "struct" and "enum", which are
 // concepts only introduced by the Schema layer, and not present in the
 // Data Model layer.
-type Kind uint8
+type TypeKind uint8
 
 const (
-	Kind_Invalid Kind = 0
-	Kind_Map     Kind = '{'
-	Kind_List    Kind = '['
-	Kind_Unit    Kind = '1'
-	Kind_Bool    Kind = 'b'
-	Kind_Int     Kind = 'i'
-	Kind_Float   Kind = 'f'
-	Kind_String  Kind = 's'
-	Kind_Bytes   Kind = 'x'
-	Kind_Link    Kind = '/'
-	Kind_Struct  Kind = '$'
-	Kind_Union   Kind = '^'
-	Kind_Enum    Kind = '%'
-	// FUTURE: Kind_Any = '?'?
+	TypeKind_Invalid TypeKind = 0
+	TypeKind_Map     TypeKind = '{'
+	TypeKind_List    TypeKind = '['
+	TypeKind_Unit    TypeKind = '1'
+	TypeKind_Bool    TypeKind = 'b'
+	TypeKind_Int     TypeKind = 'i'
+	TypeKind_Float   TypeKind = 'f'
+	TypeKind_String  TypeKind = 's'
+	TypeKind_Bytes   TypeKind = 'x'
+	TypeKind_Link    TypeKind = '/'
+	TypeKind_Struct  TypeKind = '$'
+	TypeKind_Union   TypeKind = '^'
+	TypeKind_Enum    TypeKind = '%'
+	// FUTURE: TypeKind_Any = '?'?
 )
 
-func (k Kind) String() string {
+func (k TypeKind) String() string {
 	switch k {
-	case Kind_Invalid:
-		return "Invalid"
-	case Kind_Map:
-		return "Map"
-	case Kind_List:
-		return "List"
-	case Kind_Unit:
-		return "Unit"
-	case Kind_Bool:
-		return "Bool"
-	case Kind_Int:
-		return "Int"
-	case Kind_Float:
-		return "Float"
-	case Kind_String:
-		return "String"
-	case Kind_Bytes:
-		return "Bytes"
-	case Kind_Link:
-		return "Link"
-	case Kind_Struct:
-		return "Struct"
-	case Kind_Union:
-		return "Union"
-	case Kind_Enum:
-		return "Enum"
+	case TypeKind_Invalid:
+		return "invalid"
+	case TypeKind_Map:
+		return "map"
+	case TypeKind_List:
+		return "list"
+	case TypeKind_Unit:
+		return "unit"
+	case TypeKind_Bool:
+		return "bool"
+	case TypeKind_Int:
+		return "int"
+	case TypeKind_Float:
+		return "float"
+	case TypeKind_String:
+		return "string"
+	case TypeKind_Bytes:
+		return "bytes"
+	case TypeKind_Link:
+		return "link"
+	case TypeKind_Struct:
+		return "struct"
+	case TypeKind_Union:
+		return "union"
+	case TypeKind_Enum:
+		return "enum"
 	default:
 		panic("invalid enumeration value!")
 	}
 }
 
-// ActsLike returns a constant from the ipld.ReprKind enum describing what
-// this schema.Kind acts like at the Data Model layer.
+// ActsLike returns a constant from the datamodel.Kind enum describing what
+// this schema.TypeKind acts like at the Data Model layer.
 //
 // Things with similar names are generally conserved
 // (e.g. "map" acts like "map");
@@ -74,34 +74,34 @@ func (k Kind) String() string {
 // it does not necessarily describe how it will be *serialized*
 // (for example, a struct will always act like a map, even if it has a tuple
 // representation strategy and thus becomes a list when serialized).
-func (k Kind) ActsLike() ipld.ReprKind {
+func (k TypeKind) ActsLike() datamodel.Kind {
 	switch k {
-	case Kind_Invalid:
-		return ipld.ReprKind_Invalid
-	case Kind_Map:
-		return ipld.ReprKind_Map
-	case Kind_List:
-		return ipld.ReprKind_List
-	case Kind_Unit:
-		return ipld.ReprKind_Bool // maps to 'true'.
-	case Kind_Bool:
-		return ipld.ReprKind_Bool
-	case Kind_Int:
-		return ipld.ReprKind_Int
-	case Kind_Float:
-		return ipld.ReprKind_Float
-	case Kind_String:
-		return ipld.ReprKind_String
-	case Kind_Bytes:
-		return ipld.ReprKind_Bytes
-	case Kind_Link:
-		return ipld.ReprKind_Link
-	case Kind_Struct:
-		return ipld.ReprKind_Map // clear enough: fields are keys.
-	case Kind_Union:
-		return ipld.ReprKind_Map // REVIEW: unions are tricky.
-	case Kind_Enum:
-		return ipld.ReprKind_String // 'AsString' is the one clear thing to define.
+	case TypeKind_Invalid:
+		return datamodel.Kind_Invalid
+	case TypeKind_Map:
+		return datamodel.Kind_Map
+	case TypeKind_List:
+		return datamodel.Kind_List
+	case TypeKind_Unit:
+		return datamodel.Kind_Bool // maps to 'true'.
+	case TypeKind_Bool:
+		return datamodel.Kind_Bool
+	case TypeKind_Int:
+		return datamodel.Kind_Int
+	case TypeKind_Float:
+		return datamodel.Kind_Float
+	case TypeKind_String:
+		return datamodel.Kind_String
+	case TypeKind_Bytes:
+		return datamodel.Kind_Bytes
+	case TypeKind_Link:
+		return datamodel.Kind_Link
+	case TypeKind_Struct:
+		return datamodel.Kind_Map // clear enough: fields are keys.
+	case TypeKind_Union:
+		return datamodel.Kind_Map // REVIEW: unions are tricky.
+	case TypeKind_Enum:
+		return datamodel.Kind_String // 'AsString' is the one clear thing to define.
 	default:
 		panic("invalid enumeration value!")
 	}

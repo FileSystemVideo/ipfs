@@ -1,16 +1,15 @@
 package fslock
 
 import (
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 
 	util "github.com/ipfs/go-ipfs-util"
-	logging "github.com/ipfs/go-log"
+	logging "github.com/ipfs/go-log/v2"
 	lock "go4.org/lock"
-	"golang.org/x/xerrors"
 )
 
 // log is the fsrepo logger
@@ -30,10 +29,7 @@ func Lock(confdir, lockFileName string) (io.Closer, error) {
 	lk, err := lock.Lock(lockFilePath)
 	if err != nil {
 		switch {
-		case err == syscall.EAGAIN:
-			// EAGAIN == someone else has the lock
-			fallthrough
-		case strings.Contains(err.Error(), "resource temporarily unavailable"):
+		case lockedByOthers(err):
 			return lk, &os.PathError{
 				Op:   "lock",
 				Path: lockFilePath,
@@ -78,7 +74,7 @@ func Locked(confdir, lockFile string) (bool, error) {
 
 	log.Debug(err)
 
-	if xerrors.As(err, new(LockedError)) {
+	if errors.As(err, new(LockedError)) {
 		return true, nil
 	}
 	return false, err

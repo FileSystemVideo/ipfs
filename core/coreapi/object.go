@@ -12,7 +12,7 @@ import (
 	"io/ioutil"
 
 	cid "github.com/ipfs/go-cid"
-	"github.com/ipfs/go-ipfs-pinner"
+	pin "github.com/ipfs/go-ipfs-pinner"
 	ipld "github.com/ipfs/go-ipld-format"
 	dag "github.com/ipfs/go-merkledag"
 	"github.com/ipfs/go-merkledag/dagutils"
@@ -48,6 +48,8 @@ func (api *ObjectAPI) New(ctx context.Context, opts ...caopts.ObjectNewOption) (
 		n = new(dag.ProtoNode)
 	case "unixfs-dir":
 		n = ft.EmptyDirNode()
+	default:
+		return nil, fmt.Errorf("unknown node type: %s", options.Type)
 	}
 
 	err = api.dag.Add(ctx, n)
@@ -108,7 +110,7 @@ func (api *ObjectAPI) Put(ctx context.Context, src io.Reader, opts ...caopts.Obj
 	}
 
 	if options.Pin {
-		defer api.blockstore.PinLock().Unlock()
+		defer api.blockstore.PinLock(ctx).Unlock(ctx)
 	}
 
 	err = api.dag.Add(ctx, dagnode)

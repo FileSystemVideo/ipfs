@@ -11,18 +11,32 @@ import (
 
 	pb "github.com/libp2p/go-libp2p-pubsub/pb"
 
-	"github.com/libp2p/go-libp2p-core/helpers"
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/peerstore"
 	"github.com/libp2p/go-libp2p-core/protocol"
 
-	ggio "github.com/gogo/protobuf/io"
+	"github.com/libp2p/go-msgio/protoio"
 )
 
 var TraceBufferSize = 1 << 16 // 64K ought to be enough for everyone; famous last words.
 var MinTraceBatchSize = 16
+
+// rejection reasons
+const (
+	RejectBlacklstedPeer      = "blacklisted peer"
+	RejectBlacklistedSource   = "blacklisted source"
+	RejectMissingSignature    = "missing signature"
+	RejectUnexpectedSignature = "unexpected signature"
+	RejectUnexpectedAuthInfo  = "unexpected auth info"
+	RejectInvalidSignature    = "invalid signature"
+	RejectValidationQueueFull = "validation queue full"
+	RejectValidationThrottled = "validation throttled"
+	RejectValidationFailed    = "validation failed"
+	RejectValidationIgnored   = "validation ignored"
+	RejectSelfOrigin          = "self originated message"
+)
 
 type basicTracer struct {
 	ch     chan struct{}
@@ -34,17 +48,17 @@ type basicTracer struct {
 
 func (t *basicTracer) Trace(evt *pb.TraceEvent) {
 	t.mx.Lock()
+	defer t.mx.Unlock()
+
 	if t.closed {
-		t.mx.Unlock()
 		return
 	}
 
 	if t.lossy && len(t.buf) > TraceBufferSize {
-		log.Warningf("trace buffer overflow; dropping trace event")
+		log.Debug("trace buffer overflow; dropping trace event")
 	} else {
 		t.buf = append(t.buf, evt)
 	}
-	t.mx.Unlock()
 
 	select {
 	case t.ch <- struct{}{}:
@@ -100,7 +114,7 @@ func (t *JSONTracer) doWrite() {
 		for i, evt := range buf {
 			err := enc.Encode(evt)
 			if err != nil {
-				log.Errorf("error writing event trace: %s", err.Error())
+				log.Warnf("error writing event trace: %s", err.Error())
 			}
 			buf[i] = nil
 		}
@@ -139,7 +153,7 @@ func OpenPBTracer(file string, flags int, perm os.FileMode) (*PBTracer, error) {
 
 func (t *PBTracer) doWrite() {
 	var buf []*pb.TraceEvent
-	w := ggio.NewDelimitedWriter(t.w)
+	w := protoio.NewDelimitedWriter(t.w)
 	for {
 		_, ok := <-t.ch
 
@@ -152,7 +166,7 @@ func (t *PBTracer) doWrite() {
 		for i, evt := range buf {
 			err := w.WriteMsg(evt)
 			if err != nil {
-				log.Errorf("error writing event trace: %s", err.Error())
+				log.Warnf("error writing event trace: %s", err.Error())
 			}
 			buf[i] = nil
 		}
@@ -189,14 +203,14 @@ func (t *RemoteTracer) doWrite() {
 
 	s, err := t.openStream()
 	if err != nil {
-		log.Errorf("error opening remote tracer stream: %s", err.Error())
+		log.Debugf("error opening remote tracer stream: %s", err.Error())
 		return
 	}
 
 	var batch pb.TraceEventBatch
 
 	gzipW := gzip.NewWriter(s)
-	w := ggio.NewDelimitedWriter(gzipW)
+	w := protoio.NewDelimitedWriter(gzipW)
 
 	for {
 		_, ok := <-t.ch
@@ -224,13 +238,13 @@ func (t *RemoteTracer) doWrite() {
 
 		err = w.WriteMsg(&batch)
 		if err != nil {
-			log.Errorf("error writing trace event batch: %s", err)
+			log.Debugf("error writing trace event batch: %s", err)
 			goto end
 		}
 
 		err = gzipW.Flush()
 		if err != nil {
-			log.Errorf("error flushin gzip stream: %s", err)
+			log.Debugf("error flushin gzip stream: %s", err)
 			goto end
 		}
 
@@ -245,7 +259,7 @@ func (t *RemoteTracer) doWrite() {
 				s.Reset()
 			} else {
 				gzipW.Close()
-				helpers.FullClose(s)
+				s.Close()
 			}
 			return
 		}
@@ -254,7 +268,7 @@ func (t *RemoteTracer) doWrite() {
 			s.Reset()
 			s, err = t.openStream()
 			if err != nil {
-				log.Errorf("error opening remote tracer stream: %s", err.Error())
+				log.Debugf("error opening remote tracer stream: %s", err.Error())
 				return
 			}
 

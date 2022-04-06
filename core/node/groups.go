@@ -9,7 +9,8 @@ import (
 	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	config "github.com/ipfs/go-ipfs-config"
 	util "github.com/ipfs/go-ipfs-util"
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	"github.com/ipfs/go-log"
+	"github.com/libp2p/go-libp2p-core/peer"
 	pubsub "github.com/libp2p/go-libp2p-pubsub"
 
 	"github.com/ipfs/go-ipfs/core/node/libp2p"
@@ -17,18 +18,20 @@ import (
 
 	offline "github.com/ipfs/go-ipfs-exchange-offline"
 	offroute "github.com/ipfs/go-ipfs-routing/offline"
-	"github.com/ipfs/go-path/resolver"
 	uio "github.com/ipfs/go-unixfs/io"
+
+	"github.com/dustin/go-humanize"
 	"go.uber.org/fx"
 )
+
+var logger = log.Logger("core:constructor")
 
 var BaseLibP2P = fx.Options(
 	fx.Provide(libp2p.UserAgent),
 	fx.Provide(libp2p.PNet),
 	fx.Provide(libp2p.ConnectionManager),
-	fx.Provide(libp2p.DefaultTransports),
-
 	fx.Provide(libp2p.Host),
+	fx.Provide(libp2p.MultiaddrResolver),
 
 	fx.Provide(libp2p.DiscoveryHandler),
 
@@ -75,7 +78,6 @@ func LibP2P(bcfg *BuildCfg, cfg *config.Config) fx.Option {
 		pubsubOptions = append(
 			pubsubOptions,
 			pubsub.WithMessageSigning(!cfg.Pubsub.DisableSigning),
-			pubsub.WithStrictSignatureVerification(cfg.Pubsub.StrictSignatureVerification),
 		)
 
 		switch cfg.Pubsub.Router {
@@ -109,37 +111,61 @@ func LibP2P(bcfg *BuildCfg, cfg *config.Config) fx.Option {
 		autonat = fx.Provide(libp2p.AutoNATService(cfg.AutoNAT.Throttle))
 	}
 
-	seedServerOpts := fx.Options()
-	if seedServer, ok := cfg.Plugins.Plugins["SeedServer"]; ok {
-		//如果开启了种子服务插件，则启动强制nat public
-		if !seedServer.Disabled {
-			seedServerOpts = fx.Provide(libp2p.ForceReachabilityPublic(), libp2p.EnableSeedServer())
+	// If `cfg.Swarm.DisableRelay` is set and `Network.RelayTransport` isn't, use the former.
+	enableRelayTransport := cfg.Swarm.Transports.Network.Relay.WithDefault(!cfg.Swarm.DisableRelay) //nolint
+
+	// Warn about a deprecated option.
+	//nolint
+	if cfg.Swarm.DisableRelay {
+		logger.Error("The 'Swarm.DisableRelay' config field is deprecated.")
+		if enableRelayTransport {
+			logger.Error("'Swarm.DisableRelay' has been overridden by 'Swarm.Transports.Network.Relay'")
+		} else {
+			logger.Error("Use the 'Swarm.Transports.Network.Relay' config field instead")
 		}
 	}
-	// Gather all the options
+	//nolint
+	if cfg.Swarm.EnableAutoRelay {
+		logger.Error("The 'Swarm.EnableAutoRelay' config field is deprecated.")
+		if cfg.Swarm.RelayClient.Enabled == config.Default {
+			logger.Error("Use the 'Swarm.AutoRelay.Enabled' config field instead")
+		} else {
+			logger.Error("'Swarm.EnableAutoRelay' has been overridden by 'Swarm.AutoRelay.Enabled'")
+		}
+	}
+	//nolint
+	if cfg.Swarm.EnableRelayHop {
+		logger.Fatal("The `Swarm.EnableRelayHop` config field is ignored.\n" +
+			"Use `Swarm.RelayService` to configure the circuit v2 relay.\n" +
+			"If you want to continue running a circuit v1 relay, please use the standalone relay daemon: https://github.com/libp2p/go-libp2p-relay-daemon (with RelayV1.Enabled: true)")
+	}
 
+	// Gather all the options
 	opts := fx.Options(
 		BaseLibP2P,
 
 		fx.Provide(libp2p.AddrFilters(cfg.Swarm.AddrFilters)),
-		fx.Provide(libp2p.AddrsFactory(cfg.Addresses.Announce, cfg.Addresses.NoAnnounce)),
-		fx.Provide(libp2p.SmuxTransport(bcfg.getOpt("mplex"))),
-		fx.Provide(libp2p.Relay(cfg.Swarm.DisableRelay, cfg.Swarm.EnableRelayHop)),
+		fx.Provide(libp2p.AddrsFactory(cfg.Addresses.Announce, cfg.Addresses.AppendAnnounce, cfg.Addresses.NoAnnounce)),
+		fx.Provide(libp2p.SmuxTransport(cfg.Swarm.Transports)),
+		fx.Provide(libp2p.RelayTransport(enableRelayTransport)),
+		fx.Provide(libp2p.RelayService(cfg.Swarm.RelayService.Enabled.WithDefault(true), cfg.Swarm.RelayService)),
+		fx.Provide(libp2p.Transports(cfg.Swarm.Transports)),
 		fx.Invoke(libp2p.StartListening(cfg.Addresses.Swarm)),
 		fx.Invoke(libp2p.SetupDiscovery(cfg.Discovery.MDNS.Enabled, cfg.Discovery.MDNS.Interval)),
+		fx.Provide(libp2p.ForceReachability(cfg.Internal.Libp2pForceReachability)),
+		fx.Provide(libp2p.StaticRelays(cfg.Swarm.RelayClient.StaticRelays)),
+		fx.Provide(libp2p.HolePunching(cfg.Swarm.EnableHolePunching, cfg.Swarm.RelayClient.Enabled.WithDefault(false))),
 
-		fx.Provide(libp2p.Security(!bcfg.DisableEncryptedConnections)),
+		fx.Provide(libp2p.Security(!bcfg.DisableEncryptedConnections, cfg.Swarm.Transports)),
 
 		fx.Provide(libp2p.Routing),
-		fx.Provide(libp2p.BaseRouting),
+		fx.Provide(libp2p.BaseRouting(cfg.Experimental.AcceleratedDHTClient)),
 		maybeProvide(libp2p.PubsubRouter, bcfg.getOpt("ipnsps")),
 
 		maybeProvide(libp2p.BandwidthCounter, !cfg.Swarm.DisableBandwidthMetrics),
 		maybeProvide(libp2p.NatPortMap, !cfg.Swarm.DisableNatPortMap),
-		maybeProvide(libp2p.AutoRelay, cfg.Swarm.EnableAutoRelay),
-		maybeProvide(libp2p.QUIC, cfg.Experimental.QUIC),
+		maybeProvide(libp2p.AutoRelay(len(cfg.Swarm.RelayClient.StaticRelays) == 0), cfg.Swarm.RelayClient.Enabled.WithDefault(false)),
 		autonat,
-		seedServerOpts,
 		connmgr,
 		ps,
 		disc,
@@ -257,16 +283,19 @@ func Online(bcfg *BuildCfg, cfg *config.Config) fx.Option {
 	shouldBitswapProvide := !cfg.Experimental.StrategicProviding
 
 	return fx.Options(
-		fx.Provide(OnlineExchange(shouldBitswapProvide)),
+		fx.Provide(OnlineExchange(cfg, shouldBitswapProvide)),
 		maybeProvide(Graphsync, cfg.Experimental.GraphsyncEnabled),
+		fx.Provide(DNSResolver),
 		fx.Provide(Namesys(ipnsCacheSize)),
+		fx.Provide(Peering),
+		PeerWith(cfg.Peering.Peers...),
 
 		fx.Invoke(IpnsRepublisher(repubPeriod, recordLifetime)),
 
 		fx.Provide(p2p.New),
 
 		LibP2P(bcfg, cfg),
-		OnlineProviders(cfg.Experimental.StrategicProviding, cfg.Reprovider.Strategy, cfg.Reprovider.Interval),
+		OnlineProviders(cfg.Experimental.StrategicProviding, cfg.Experimental.AcceleratedDHTClient, cfg.Reprovider.Strategy, cfg.Reprovider.Interval),
 	)
 }
 
@@ -274,9 +303,10 @@ func Online(bcfg *BuildCfg, cfg *config.Config) fx.Option {
 func Offline(cfg *config.Config) fx.Option {
 	return fx.Options(
 		fx.Provide(offline.Exchange),
+		fx.Provide(DNSResolver),
 		fx.Provide(Namesys(0)),
 		fx.Provide(offroute.NewOfflineRouter),
-		OfflineProviders(cfg.Experimental.StrategicProviding, cfg.Reprovider.Strategy, cfg.Reprovider.Interval),
+		OfflineProviders(cfg.Experimental.StrategicProviding, cfg.Experimental.AcceleratedDHTClient, cfg.Reprovider.Strategy, cfg.Reprovider.Interval),
 	)
 }
 
@@ -284,7 +314,7 @@ func Offline(cfg *config.Config) fx.Option {
 var Core = fx.Options(
 	fx.Provide(BlockService),
 	fx.Provide(Dag),
-	fx.Provide(resolver.NewBasicResolver),
+	fx.Provide(FetcherConfig),
 	fx.Provide(Pinning),
 	fx.Provide(Files),
 )
@@ -307,8 +337,20 @@ func IPFS(ctx context.Context, bcfg *BuildCfg) fx.Option {
 		return bcfgOpts // error
 	}
 
-	// TEMP: setting global sharding switch here
-	uio.UseHAMTSharding = cfg.Experimental.ShardingEnabled
+	// Auto-sharding settings
+	shardSizeString := cfg.Internal.UnixFSShardingSizeThreshold.WithDefault("256kiB")
+	shardSizeInt, err := humanize.ParseBytes(shardSizeString)
+	if err != nil {
+		return fx.Error(err)
+	}
+	uio.HAMTShardingSize = int(shardSizeInt)
+
+	// Migrate users of deprecated Experimental.ShardingEnabled flag
+	if cfg.Experimental.ShardingEnabled {
+		logger.Fatal("The `Experimental.ShardingEnabled` field is no longer used, please remove it from the config.\n" +
+			"go-ipfs now automatically shards when directory block is bigger than  `" + shardSizeString + "`.\n" +
+			"If you need to restore the old behavior (sharding everything) set `Internal.UnixFSShardingSizeThreshold` to `1B`.\n")
+	}
 
 	return fx.Options(
 		bcfgOpts,

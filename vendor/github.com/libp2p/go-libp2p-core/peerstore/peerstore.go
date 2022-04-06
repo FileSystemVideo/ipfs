@@ -28,14 +28,14 @@ var (
 	// ProviderAddrTTL is the TTL of an address we've received from a provider.
 	// This is also a temporary address, but lasts longer. After this expires,
 	// the records we return will require an extra lookup.
-	ProviderAddrTTL = time.Minute * 10
+	ProviderAddrTTL = time.Minute * 30
 
 	// RecentlyConnectedAddrTTL is used when we recently connected to a peer.
 	// It means that we are reasonably certain of the peer's address.
-	RecentlyConnectedAddrTTL = time.Minute * 10
+	RecentlyConnectedAddrTTL = time.Minute * 30
 
 	// OwnObservedAddrTTL is used for our own external addresses observed by peers.
-	OwnObservedAddrTTL = time.Minute * 10
+	OwnObservedAddrTTL = time.Minute * 30
 )
 
 // Permanent TTLs (distinct so we can distinguish between them, constant as they
@@ -110,8 +110,9 @@ type AddrBook interface {
 	// Addrs returns all known (and valid) addresses for a given peer.
 	Addrs(p peer.ID) []ma.Multiaddr
 
-	// AddrStream返回一个通道，该通道获取发送给它的给定对等方的所有地址。
-	// 如果在呼叫后添加了新地址，它们也将通过通道发送。
+	// AddrStream returns a channel that gets all addresses for a given
+	// peer sent on it. If new addresses are added after the call is made
+	// they will be sent along through the channel as well.
 	AddrStream(context.Context, peer.ID) <-chan ma.Multiaddr
 
 	// ClearAddresses removes all previously stored addresses.
@@ -232,5 +233,13 @@ type ProtoBook interface {
 	AddProtocols(peer.ID, ...string) error
 	SetProtocols(peer.ID, ...string) error
 	RemoveProtocols(peer.ID, ...string) error
+
+	// SupportsProtocols returns the set of protocols the peer supports from among the given protocols.
+	// If the returned error is not nil, the result is indeterminate.
 	SupportsProtocols(peer.ID, ...string) ([]string, error)
+
+	// FirstSupportedProtocol returns the first protocol that the peer supports among the given protocols.
+	// If the peer does not support any of the given protocols, this function will return an empty string and a nil error.
+	// If the returned error is not nil, the result is indeterminate.
+	FirstSupportedProtocol(peer.ID, ...string) (string, error)
 }

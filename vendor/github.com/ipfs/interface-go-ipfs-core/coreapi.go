@@ -4,6 +4,7 @@ package iface
 
 import (
 	"context"
+
 	path "github.com/ipfs/interface-go-ipfs-core/path"
 
 	"github.com/ipfs/interface-go-ipfs-core/options"
@@ -39,9 +40,6 @@ type CoreAPI interface {
 
 	// Swarm returns an implementation of Swarm API
 	Swarm() SwarmAPI
-
-	//贡献模块
-	Contribution() ContributionApi
 
 	// PubSub returns an implementation of PubSub API
 	PubSub() PubSubAPI

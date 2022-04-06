@@ -19,7 +19,7 @@ import (
 	ds "github.com/ipfs/go-datastore"
 	dssync "github.com/ipfs/go-datastore/sync"
 	dshelp "github.com/ipfs/go-ipfs-ds-help"
-	logging "github.com/ipfs/go-log"
+	logging "github.com/ipfs/go-log/v2"
 )
 
 var log = logging.Logger("pubsub-valuestore")
@@ -28,7 +28,7 @@ var log = logging.Logger("pubsub-valuestore")
 // value store. This way, users can wrap the underlying pubsub implementation
 // without re-exporting/implementing the entire interface.
 type Pubsub interface {
-	RegisterTopicValidator(topic string, val pubsub.Validator, opts ...pubsub.ValidatorOpt) error
+	RegisterTopicValidator(topic string, validator interface{}, opts ...pubsub.ValidatorOpt) error
 	Join(topic string, opts ...pubsub.TopicOpt) (*pubsub.Topic, error)
 }
 
@@ -127,7 +127,7 @@ func (p *PubsubValueStore) PutValue(ctx context.Context, key string, value []byt
 
 	ti.dbWriteMx.Lock()
 	defer ti.dbWriteMx.Unlock()
-	recCmp, err := p.putLocal(ti, key, value)
+	recCmp, err := p.putLocal(ctx, ti, key, value)
 	if err != nil {
 		return err
 	}
@@ -144,28 +144,30 @@ func (p *PubsubValueStore) PutValue(ctx context.Context, key string, value []byt
 }
 
 // compare compares the input value with the current value.
-// Returns 0 if equal, greater than 0 if better, less than 0 if worse
-func (p *PubsubValueStore) compare(key string, val []byte) int {
+// First return value is 0 if equal, greater than 0 if better, less than 0 if worse.
+// Second return value is true if valid.
+//
+func (p *PubsubValueStore) compare(ctx context.Context, key string, val []byte) (int, bool) {
 	if p.Validator.Validate(key, val) != nil {
-		return -1
+		return -1, false
 	}
 
-	old, err := p.getLocal(key)
+	old, err := p.getLocal(ctx, key)
 	if err != nil {
 		// If the old one is invalid, the new one is *always* better.
-		return 1
+		return 1, true
 	}
 
 	// Same record is not better
 	if old != nil && bytes.Equal(old, val) {
-		return 0
+		return 0, true
 	}
 
 	i, err := p.Validator.Select(key, [][]byte{val, old})
 	if err == nil && i == 0 {
-		return 1
+		return 1, true
 	}
-	return -1
+	return -1, true
 }
 
 func (p *PubsubValueStore) Subscribe(key string) error {
@@ -173,7 +175,7 @@ func (p *PubsubValueStore) Subscribe(key string) error {
 	defer p.mx.Unlock()
 
 	// see if we already have a pubsub subscription; if not, subscribe
-	ti, ok := p.topics[key]
+	_, ok := p.topics[key]
 	if ok {
 		return nil
 	}
@@ -185,10 +187,20 @@ func (p *PubsubValueStore) Subscribe(key string) error {
 	//
 	// Also, make sure to do this *before* subscribing.
 	myID := p.host.ID()
-	_ = p.ps.RegisterTopicValidator(topic, func(ctx context.Context, src peer.ID, msg *pubsub.Message) bool {
-		cmp := p.compare(key, msg.GetData())
+	_ = p.ps.RegisterTopicValidator(topic, func(
+		ctx context.Context,
+		src peer.ID,
+		msg *pubsub.Message,
+	) pubsub.ValidationResult {
+		cmp, valid := p.compare(ctx, key, msg.GetData())
+		if !valid {
+			return pubsub.ValidationReject
+		}
 
-		return cmp > 0 || cmp == 0 && src == myID
+		if cmp > 0 || cmp == 0 && src == myID {
+			return pubsub.ValidationAccept
+		}
+		return pubsub.ValidationIgnore
 	})
 
 	ti, err := p.createTopicHandler(topic)
@@ -259,7 +271,7 @@ func (p *PubsubValueStore) rebroadcast(ctx context.Context) {
 			p.mx.Unlock()
 			if len(topics) > 0 {
 				for i, k := range keys {
-					val, err := p.getLocal(k)
+					val, err := p.getLocal(ctx, k)
 					if err == nil {
 						topic := topics[i].topic
 						select {
@@ -288,16 +300,16 @@ func (p *PubsubValueStore) psPublishChannel(ctx context.Context, topic *pubsub.T
 // Requires that the ti.dbWriteMx is held when called
 // Returns true if the value is better then what is currently in the datastore
 // Returns any errors from putting the data in the datastore
-func (p *PubsubValueStore) putLocal(ti *topicInfo, key string, value []byte) (int, error) {
-	cmp := p.compare(key, value)
-	if cmp > 0 {
-		return cmp, p.ds.Put(dshelp.NewKeyFromBinary([]byte(key)), value)
+func (p *PubsubValueStore) putLocal(ctx context.Context, ti *topicInfo, key string, value []byte) (int, error) {
+	cmp, valid := p.compare(ctx, key, value)
+	if valid && cmp > 0 {
+		return cmp, p.ds.Put(ctx, dshelp.NewKeyFromBinary([]byte(key)), value)
 	}
 	return cmp, nil
 }
 
-func (p *PubsubValueStore) getLocal(key string) ([]byte, error) {
-	val, err := p.ds.Get(dshelp.NewKeyFromBinary([]byte(key)))
+func (p *PubsubValueStore) getLocal(ctx context.Context, key string) ([]byte, error) {
+	val, err := p.ds.Get(ctx, dshelp.NewKeyFromBinary([]byte(key)))
 	if err != nil {
 		// Don't invalidate due to ds errors.
 		if err == ds.ErrNotFound {
@@ -318,7 +330,7 @@ func (p *PubsubValueStore) GetValue(ctx context.Context, key string, opts ...rou
 		return nil, err
 	}
 
-	return p.getLocal(key)
+	return p.getLocal(ctx, key)
 }
 
 func (p *PubsubValueStore) SearchValue(ctx context.Context, key string, opts ...routing.Option) (<-chan []byte, error) {
@@ -330,7 +342,7 @@ func (p *PubsubValueStore) SearchValue(ctx context.Context, key string, opts ...
 	defer p.watchLk.Unlock()
 
 	out := make(chan []byte, 1)
-	lv, err := p.getLocal(key)
+	lv, err := p.getLocal(ctx, key)
 	if err == nil {
 		out <- lv
 		close(out)
@@ -501,11 +513,11 @@ func (p *PubsubValueStore) handleSubscription(ctx context.Context, ti *topicInfo
 		}
 
 		ti.dbWriteMx.Lock()
-		recCmp, err := p.putLocal(ti, key, data)
+		recCmp, err := p.putLocal(ctx, ti, key, data)
 		ti.dbWriteMx.Unlock()
 		if recCmp > 0 {
 			if err != nil {
-				log.Warningf("PubsubResolve: error writing update for %s: %s", key, err)
+				log.Warnf("PubsubResolve: error writing update for %s: %s", key, err)
 			}
 			p.notifyWatchers(key, data)
 		}
@@ -516,7 +528,7 @@ func (p *PubsubValueStore) handleNewMsgs(ctx context.Context, sub *pubsub.Subscr
 	msg, err := sub.Next(ctx)
 	if err != nil {
 		if err != context.Canceled {
-			log.Warningf("PubsubResolve: subscription error in %s: %s", key, err.Error())
+			log.Warnf("PubsubResolve: subscription error in %s: %s", key, err.Error())
 		}
 		return nil, err
 	}
@@ -528,7 +540,7 @@ func (p *PubsubValueStore) handleNewPeer(ctx context.Context, peerEvtHandler *pu
 		peerEvt, err := peerEvtHandler.NextPeerEvent(ctx)
 		if err != nil {
 			if err != context.Canceled {
-				log.Warningf("PubsubNewPeer: subscription error in %s: %s", key, err.Error())
+				log.Warnf("PubsubNewPeer: subscription error in %s: %s", key, err.Error())
 			}
 			return nil, err
 		}
@@ -574,6 +586,14 @@ func WithRebroadcastInterval(duration time.Duration) Option {
 func WithRebroadcastInitialDelay(duration time.Duration) Option {
 	return func(store *PubsubValueStore) error {
 		store.rebroadcastInitialDelay = duration
+		return nil
+	}
+}
+
+// WithDatastore returns an option that overrides the default datastore.
+func WithDatastore(datastore ds.Datastore) Option {
+	return func(store *PubsubValueStore) error {
+		store.ds = datastore
 		return nil
 	}
 }

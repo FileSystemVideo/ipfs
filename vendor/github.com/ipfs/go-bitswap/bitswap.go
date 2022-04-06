@@ -5,17 +5,20 @@ package bitswap
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"sync"
 	"time"
 
 	delay "github.com/ipfs/go-ipfs-delay"
 
+	deciface "github.com/ipfs/go-bitswap/decision"
 	bsbpm "github.com/ipfs/go-bitswap/internal/blockpresencemanager"
-	decision "github.com/ipfs/go-bitswap/internal/decision"
+	"github.com/ipfs/go-bitswap/internal/decision"
+	"github.com/ipfs/go-bitswap/internal/defaults"
 	bsgetter "github.com/ipfs/go-bitswap/internal/getter"
 	bsmq "github.com/ipfs/go-bitswap/internal/messagequeue"
-	notifications "github.com/ipfs/go-bitswap/internal/notifications"
+	"github.com/ipfs/go-bitswap/internal/notifications"
 	bspm "github.com/ipfs/go-bitswap/internal/peermanager"
 	bspqm "github.com/ipfs/go-bitswap/internal/providerquerymanager"
 	bssession "github.com/ipfs/go-bitswap/internal/session"
@@ -25,26 +28,20 @@ import (
 	bsmsg "github.com/ipfs/go-bitswap/message"
 	bsnet "github.com/ipfs/go-bitswap/network"
 	blocks "github.com/ipfs/go-block-format"
-	cid "github.com/ipfs/go-cid"
+	"github.com/ipfs/go-cid"
 	blockstore "github.com/ipfs/go-ipfs-blockstore"
 	exchange "github.com/ipfs/go-ipfs-exchange-interface"
 	logging "github.com/ipfs/go-log"
-	metrics "github.com/ipfs/go-metrics-interface"
+	"github.com/ipfs/go-metrics-interface"
 	process "github.com/jbenet/goprocess"
 	procctx "github.com/jbenet/goprocess/context"
-	peer "github.com/libp2p/go-libp2p-core/peer"
+	"github.com/libp2p/go-libp2p-core/peer"
 )
 
 var log = logging.Logger("bitswap")
 var sflog = log.Desugar()
 
 var _ exchange.SessionExchange = (*Bitswap)(nil)
-
-const (
-	// these requests take at _least_ two minutes at the moment.
-	provideTimeout         = time.Minute * 3
-	defaultProvSearchDelay = time.Second
-)
 
 var (
 	// HasBlockBufferSize is the buffer size of the channel for new blocks
@@ -57,6 +54,8 @@ var (
 
 	// the 1<<18+15 is to observe old file chunks that are 1<<18 + 14 in size
 	metricsBuckets = []float64{1 << 6, 1 << 10, 1 << 14, 1 << 18, 1<<18 + 15, 1 << 22}
+
+	timeMetricsBuckets = []float64{1, 10, 30, 60, 90, 120, 600}
 )
 
 // Option defines the functional option type that can be used to configure
@@ -84,6 +83,47 @@ func RebroadcastDelay(newRebroadcastDelay delay.D) Option {
 	}
 }
 
+// EngineBlockstoreWorkerCount sets the number of worker threads used for
+// blockstore operations in the decision engine
+func EngineBlockstoreWorkerCount(count int) Option {
+	if count <= 0 {
+		panic(fmt.Sprintf("Engine blockstore worker count is %d but must be > 0", count))
+	}
+	return func(bs *Bitswap) {
+		bs.engineBstoreWorkerCount = count
+	}
+}
+
+// EngineTaskWorkerCount sets the number of worker threads used inside the engine
+func EngineTaskWorkerCount(count int) Option {
+	if count <= 0 {
+		panic(fmt.Sprintf("Engine task worker count is %d but must be > 0", count))
+	}
+	return func(bs *Bitswap) {
+		bs.engineTaskWorkerCount = count
+	}
+}
+
+func TaskWorkerCount(count int) Option {
+	if count <= 0 {
+		panic(fmt.Sprintf("task worker count is %d but must be > 0", count))
+	}
+	return func(bs *Bitswap) {
+		bs.taskWorkerCount = count
+	}
+}
+
+// MaxOutstandingBytesPerPeer describes approximately how much work we are will to have outstanding to a peer at any
+// given time. Setting it to 0 will disable any limiting.
+func MaxOutstandingBytesPerPeer(count int) Option {
+	if count < 0 {
+		panic(fmt.Sprintf("max outstanding bytes per peer is %d but must be >= 0", count))
+	}
+	return func(bs *Bitswap) {
+		bs.engineMaxOutstandingBytesPerPeer = count
+	}
+}
+
 // SetSendDontHaves indicates what to do when the engine receives a want-block
 // for a block that is not in the blockstore. Either
 // - Send a DONT_HAVE message
@@ -91,7 +131,30 @@ func RebroadcastDelay(newRebroadcastDelay delay.D) Option {
 // This option is only used for testing.
 func SetSendDontHaves(send bool) Option {
 	return func(bs *Bitswap) {
-		bs.engine.SetSendDontHaves(send)
+		bs.engineSetSendDontHaves = send
+	}
+}
+
+// Configures the engine to use the given score decision logic.
+func WithScoreLedger(scoreLedger deciface.ScoreLedger) Option {
+	return func(bs *Bitswap) {
+		bs.engineScoreLedger = scoreLedger
+	}
+}
+
+func SetSimulateDontHavesOnTimeout(send bool) Option {
+	return func(bs *Bitswap) {
+		bs.simulateDontHavesOnTimeout = send
+	}
+}
+
+type TaskInfo = decision.TaskInfo
+type TaskComparator = decision.TaskComparator
+
+// WithTaskComparator configures custom task prioritization logic.
+func WithTaskComparator(comparator TaskComparator) Option {
+	return func(bs *Bitswap) {
+		bs.taskComparator = comparator
 	}
 }
 
@@ -118,6 +181,17 @@ func New(parent context.Context, network bsnet.BitSwapNetwork,
 	sentHistogram := metrics.NewCtx(ctx, "sent_all_blocks_bytes", "Histogram of blocks sent by"+
 		" this bitswap").Histogram(metricsBuckets)
 
+	sendTimeHistogram := metrics.NewCtx(ctx, "send_times", "Histogram of how long it takes to send messages"+
+		" in this bitswap").Histogram(timeMetricsBuckets)
+
+	pendingEngineGauge := metrics.NewCtx(ctx, "pending_tasks", "Total number of pending tasks").Gauge()
+
+	activeEngineGauge := metrics.NewCtx(ctx, "active_tasks", "Total number of active tasks").Gauge()
+
+	pendingBlocksGauge := metrics.NewCtx(ctx, "pending_block_tasks", "Total number of pending blockstore tasks").Gauge()
+
+	activeBlocksGauge := metrics.NewCtx(ctx, "active_block_tasks", "Total number of active blockstore tasks").Gauge()
+
 	px := process.WithTeardown(func() error {
 		return nil
 	})
@@ -126,9 +200,12 @@ func New(parent context.Context, network bsnet.BitSwapNetwork,
 	// has an old version of Bitswap that doesn't support DONT_HAVE messages,
 	// or when no response is received within a timeout.
 	var sm *bssm.SessionManager
+	var bs *Bitswap
 	onDontHaveTimeout := func(p peer.ID, dontHaves []cid.Cid) {
 		// Simulate a message arriving with DONT_HAVEs
-		sm.ReceiveFrom(ctx, p, nil, nil, dontHaves)
+		if bs.simulateDontHavesOnTimeout {
+			sm.ReceiveFrom(ctx, p, nil, nil, dontHaves)
+		}
 	}
 	peerQueueFactory := func(ctx context.Context, p peer.ID) bspm.PeerQueue {
 		return bsmq.New(ctx, p, network, onDontHaveTimeout)
@@ -139,7 +216,11 @@ func New(parent context.Context, network bsnet.BitSwapNetwork,
 	pm := bspm.New(ctx, peerQueueFactory, network.Self())
 	pqm := bspqm.New(ctx, network)
 
-	sessionFactory := func(sessctx context.Context, id uint64, spm bssession.SessionPeerManager,
+	sessionFactory := func(
+		sessctx context.Context,
+		sessmgr bssession.SessionManager,
+		id uint64,
+		spm bssession.SessionPeerManager,
 		sim *bssim.SessionInterestManager,
 		pm bssession.PeerManager,
 		bpm *bsbpm.BlockPresenceManager,
@@ -147,34 +228,39 @@ func New(parent context.Context, network bsnet.BitSwapNetwork,
 		provSearchDelay time.Duration,
 		rebroadcastDelay delay.D,
 		self peer.ID) bssm.Session {
-		return bssession.New(ctx, sessctx, id, spm, pqm, sim, pm, bpm, notif, provSearchDelay, rebroadcastDelay, self)
+		return bssession.New(sessctx, sessmgr, id, spm, pqm, sim, pm, bpm, notif, provSearchDelay, rebroadcastDelay, self)
 	}
 	sessionPeerManagerFactory := func(ctx context.Context, id uint64) bssession.SessionPeerManager {
 		return bsspm.New(id, network.ConnectionManager())
 	}
 	notif := notifications.New()
 	sm = bssm.New(ctx, sessionFactory, sim, sessionPeerManagerFactory, bpm, pm, notif, network.Self())
-	engine := decision.NewEngine(ctx, bstore, network.ConnectionManager(), network.Self())
 
-	bs := &Bitswap{
-		blockstore:       bstore,
-		engine:           engine,
-		network:          network,
-		process:          px,
-		newBlocks:        make(chan cid.Cid, HasBlockBufferSize),
-		provideKeys:      make(chan cid.Cid, provideKeysBufferSize),
-		pm:               pm,
-		pqm:              pqm,
-		sm:               sm,
-		sim:              sim,
-		notif:            notif,
-		counters:         new(counters),
-		dupMetric:        dupHist,
-		allMetric:        allHist,
-		sentHistogram:    sentHistogram,
-		provideEnabled:   true,
-		provSearchDelay:  defaultProvSearchDelay,
-		rebroadcastDelay: delay.Fixed(time.Minute),
+	bs = &Bitswap{
+		blockstore:                       bstore,
+		network:                          network,
+		process:                          px,
+		newBlocks:                        make(chan cid.Cid, HasBlockBufferSize),
+		provideKeys:                      make(chan cid.Cid, provideKeysBufferSize),
+		pm:                               pm,
+		pqm:                              pqm,
+		sm:                               sm,
+		sim:                              sim,
+		notif:                            notif,
+		counters:                         new(counters),
+		dupMetric:                        dupHist,
+		allMetric:                        allHist,
+		sentHistogram:                    sentHistogram,
+		sendTimeHistogram:                sendTimeHistogram,
+		provideEnabled:                   true,
+		provSearchDelay:                  defaults.ProvSearchDelay,
+		rebroadcastDelay:                 delay.Fixed(time.Minute),
+		engineBstoreWorkerCount:          defaults.BitswapEngineBlockstoreWorkerCount,
+		engineTaskWorkerCount:            defaults.BitswapEngineTaskWorkerCount,
+		taskWorkerCount:                  defaults.BitswapTaskWorkerCount,
+		engineMaxOutstandingBytesPerPeer: defaults.BitswapMaxOutstandingBytesPerPeer,
+		engineSetSendDontHaves:           true,
+		simulateDontHavesOnTimeout:       true,
 	}
 
 	// apply functional options before starting and running bitswap
@@ -182,17 +268,36 @@ func New(parent context.Context, network bsnet.BitSwapNetwork,
 		option(bs)
 	}
 
+	// Set up decision engine
+	bs.engine = decision.NewEngine(
+		ctx,
+		bstore,
+		bs.engineBstoreWorkerCount,
+		bs.engineTaskWorkerCount,
+		bs.engineMaxOutstandingBytesPerPeer,
+		network.ConnectionManager(),
+		network.Self(),
+		bs.engineScoreLedger,
+		pendingEngineGauge,
+		activeEngineGauge,
+		pendingBlocksGauge,
+		activeBlocksGauge,
+		decision.WithTaskComparator(bs.taskComparator),
+	)
+	bs.engine.SetSendDontHaves(bs.engineSetSendDontHaves)
+
 	bs.pqm.Startup()
 	network.SetDelegate(bs)
 
 	// Start up bitswaps async worker routines
 	bs.startWorkers(ctx, px)
-	engine.StartWorkers(ctx, px)
+	bs.engine.StartWorkers(ctx, px)
 
 	// bind the context and process.
 	// do it over here to avoid closing before all setup is done.
 	go func() {
 		<-px.Closing() // process closes first
+		sm.Shutdown()
 		cancelFunc()
 		notif.Shutdown()
 	}()
@@ -235,9 +340,13 @@ type Bitswap struct {
 	counters  *counters
 
 	// Metrics interface metrics
-	dupMetric     metrics.Histogram
-	allMetric     metrics.Histogram
-	sentHistogram metrics.Histogram
+	dupMetric         metrics.Histogram
+	allMetric         metrics.Histogram
+	sentHistogram     metrics.Histogram
+	sendTimeHistogram metrics.Histogram
+
+	// External statistics interface
+	tracer Tracer
 
 	// the SessionManager routes requests to interested sessions
 	sm *bssm.SessionManager
@@ -254,6 +363,31 @@ type Bitswap struct {
 
 	// how often to rebroadcast providing requests to find more optimized providers
 	rebroadcastDelay delay.D
+
+	// how many worker threads to start for decision engine blockstore worker
+	engineBstoreWorkerCount int
+
+	// how many worker threads to start for decision engine task worker
+	engineTaskWorkerCount int
+
+	// the total number of simultaneous threads sending outgoing messages
+	taskWorkerCount int
+
+	// the total amount of bytes that a peer should have outstanding, it is utilized by the decision engine
+	engineMaxOutstandingBytesPerPeer int
+
+	// the score ledger used by the decision engine
+	engineScoreLedger deciface.ScoreLedger
+
+	// indicates what to do when the engine receives a want-block for a block that
+	// is not in the blockstore. Either send DONT_HAVE or do nothing.
+	// This is used to simulate older versions of bitswap that did nothing instead of sending back a DONT_HAVE.
+	engineSetSendDontHaves bool
+
+	// whether we should actually simulate dont haves on request timeout
+	simulateDontHavesOnTimeout bool
+
+	taskComparator TaskComparator
 }
 
 type counters struct {
@@ -302,8 +436,8 @@ func (bs *Bitswap) GetBlocks(ctx context.Context, keys []cid.Cid) (<-chan blocks
 
 // HasBlock announces the existence of a block to this bitswap service. The
 // service will potentially notify its peers.
-func (bs *Bitswap) HasBlock(blk blocks.Block) error {
-	return bs.receiveBlocksFrom(context.Background(), "", []blocks.Block{blk}, nil, nil)
+func (bs *Bitswap) HasBlock(ctx context.Context, blk blocks.Block) error {
+	return bs.receiveBlocksFrom(ctx, "", []blocks.Block{blk}, nil, nil)
 }
 
 // TODO: Some of this stuff really only needs to be done when adding a block
@@ -330,7 +464,7 @@ func (bs *Bitswap) receiveBlocksFrom(ctx context.Context, from peer.ID, blks []b
 
 	// Put wanted blocks into blockstore
 	if len(wanted) > 0 {
-		err := bs.blockstore.PutMany(wanted)
+		err := bs.blockstore.PutMany(ctx, wanted)
 		if err != nil {
 			log.Errorf("Error writing %d blocks to datastore: %s", len(wanted), err)
 			return err
@@ -348,12 +482,22 @@ func (bs *Bitswap) receiveBlocksFrom(ctx context.Context, from peer.ID, blks []b
 		allKs = append(allKs, b.Cid())
 	}
 
+	// If the message came from the network
+	if from != "" {
+		// Inform the PeerManager so that we can calculate per-peer latency
+		combined := make([]cid.Cid, 0, len(allKs)+len(haves)+len(dontHaves))
+		combined = append(combined, allKs...)
+		combined = append(combined, haves...)
+		combined = append(combined, dontHaves...)
+		bs.pm.ResponseReceived(from, combined)
+	}
+
 	// Send all block keys (including duplicates) to any sessions that want them.
 	// (The duplicates are needed by sessions for accounting purposes)
 	bs.sm.ReceiveFrom(ctx, from, allKs, haves, dontHaves)
 
 	// Send wanted blocks to decision engine
-	bs.engine.ReceiveFrom(from, wanted, haves)
+	bs.engine.ReceiveFrom(from, wanted)
 
 	// Publish the block to any Bitswap clients that had requested blocks.
 	// (the sessions use this pubsub mechanism to inform clients of incoming
@@ -395,6 +539,10 @@ func (bs *Bitswap) ReceiveMessage(ctx context.Context, p peer.ID, incoming bsmsg
 	bs.engine.MessageReceived(ctx, p, incoming)
 	// TODO: this is bad, and could be easily abused.
 	// Should only track *useful* messages in ledger
+
+	if bs.tracer != nil {
+		bs.tracer.MessageReceived(p, incoming)
+	}
 
 	iblocks := incoming.Blocks()
 
@@ -456,7 +604,7 @@ func (bs *Bitswap) blockstoreHas(blks []blocks.Block) []bool {
 		go func(i int, b blocks.Block) {
 			defer wg.Done()
 
-			has, err := bs.blockstore.Has(b.Cid())
+			has, err := bs.blockstore.Has(context.TODO(), b.Cid())
 			if err != nil {
 				log.Infof("blockstore.Has error: %s", err)
 				has = false

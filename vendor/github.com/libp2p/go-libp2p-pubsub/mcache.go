@@ -4,6 +4,8 @@ import (
 	"fmt"
 
 	pb "github.com/libp2p/go-libp2p-pubsub/pb"
+
+	"github.com/libp2p/go-libp2p-core/peer"
 )
 
 // NewMessageCache creates a sliding window cache that remembers messages for as
@@ -26,6 +28,7 @@ func NewMessageCache(gossip, history int) *MessageCache {
 	}
 	return &MessageCache{
 		msgs:    make(map[string]*pb.Message),
+		peertx:  make(map[string]map[peer.ID]int),
 		history: make([][]CacheEntry, history),
 		gossip:  gossip,
 		msgID:   DefaultMsgIdFn,
@@ -34,6 +37,7 @@ func NewMessageCache(gossip, history int) *MessageCache {
 
 type MessageCache struct {
 	msgs    map[string]*pb.Message
+	peertx  map[string]map[peer.ID]int
 	history [][]CacheEntry
 	gossip  int
 	msgID   MsgIdFunction
@@ -44,14 +48,14 @@ func (mc *MessageCache) SetMsgIdFn(msgID MsgIdFunction) {
 }
 
 type CacheEntry struct {
-	mid    string
-	topics []string
+	mid   string
+	topic string
 }
 
 func (mc *MessageCache) Put(msg *pb.Message) {
 	mid := mc.msgID(msg)
 	mc.msgs[mid] = msg
-	mc.history[0] = append(mc.history[0], CacheEntry{mid: mid, topics: msg.GetTopicIDs()})
+	mc.history[0] = append(mc.history[0], CacheEntry{mid: mid, topic: msg.GetTopic()})
 }
 
 func (mc *MessageCache) Get(mid string) (*pb.Message, bool) {
@@ -59,15 +63,28 @@ func (mc *MessageCache) Get(mid string) (*pb.Message, bool) {
 	return m, ok
 }
 
+func (mc *MessageCache) GetForPeer(mid string, p peer.ID) (*pb.Message, int, bool) {
+	m, ok := mc.msgs[mid]
+	if !ok {
+		return nil, 0, false
+	}
+
+	tx, ok := mc.peertx[mid]
+	if !ok {
+		tx = make(map[peer.ID]int)
+		mc.peertx[mid] = tx
+	}
+	tx[p]++
+
+	return m, tx[p], true
+}
+
 func (mc *MessageCache) GetGossipIDs(topic string) []string {
 	var mids []string
 	for _, entries := range mc.history[:mc.gossip] {
 		for _, entry := range entries {
-			for _, t := range entry.topics {
-				if t == topic {
-					mids = append(mids, entry.mid)
-					break
-				}
+			if entry.topic == topic {
+				mids = append(mids, entry.mid)
 			}
 		}
 	}
@@ -78,6 +95,7 @@ func (mc *MessageCache) Shift() {
 	last := mc.history[len(mc.history)-1]
 	for _, entry := range last {
 		delete(mc.msgs, entry.mid)
+		delete(mc.peertx, entry.mid)
 	}
 	for i := len(mc.history) - 2; i >= 0; i-- {
 		mc.history[i+1] = mc.history[i]

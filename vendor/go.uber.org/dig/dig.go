@@ -35,8 +35,9 @@ import (
 )
 
 const (
-	_optionalTag = "optional"
-	_nameTag     = "name"
+	_optionalTag         = "optional"
+	_nameTag             = "name"
+	_ignoreUnexportedTag = "ignore-unexported"
 )
 
 // Unique identification of an object in the graph.
@@ -61,6 +62,7 @@ func (f optionFunc) applyOption(c *Container) { f(c) }
 type provideOptions struct {
 	Name  string
 	Group string
+	Info  *ProvideInfo
 }
 
 func (o *provideOptions) Validate() error {
@@ -127,6 +129,75 @@ func Group(group string) ProvideOption {
 	})
 }
 
+// ID is a unique integer representing the constructor node in the dependency graph.
+type ID int
+
+// ProvideInfo provides information about the constructor's inputs and outputs
+// types as strings, as well as the ID of the constructor supplied to the Container.
+// It contains ID for the constructor, as well as slices of Input and Output types,
+// which are Stringers that report the types of the parameters and results respectively.
+type ProvideInfo struct {
+	ID      ID
+	Inputs  []*Input
+	Outputs []*Output
+}
+
+// Input contains information on an input parameter of the constructor.
+type Input struct {
+	t           reflect.Type
+	optional    bool
+	name, group string
+}
+
+func (i *Input) String() string {
+	toks := make([]string, 0, 3)
+	t := i.t.String()
+	if i.optional {
+		toks = append(toks, "optional")
+	}
+	if i.name != "" {
+		toks = append(toks, fmt.Sprintf("name = %q", i.name))
+	}
+	if i.group != "" {
+		toks = append(toks, fmt.Sprintf("group = %q", i.group))
+	}
+
+	if len(toks) == 0 {
+		return t
+	}
+	return fmt.Sprintf("%v[%v]", t, strings.Join(toks, ", "))
+}
+
+// Output contains information on an output produced by the constructor.
+type Output struct {
+	t           reflect.Type
+	name, group string
+}
+
+func (o *Output) String() string {
+	toks := make([]string, 0, 2)
+	t := o.t.String()
+	if o.name != "" {
+		toks = append(toks, fmt.Sprintf("name = %q", o.name))
+	}
+	if o.group != "" {
+		toks = append(toks, fmt.Sprintf("group = %q", o.group))
+	}
+
+	if len(toks) == 0 {
+		return t
+	}
+	return fmt.Sprintf("%v[%v]", t, strings.Join(toks, ", "))
+}
+
+// FillProvideInfo is a ProvideOption that writes info on what Dig was able to get out
+// out of the provided constructor into the provided ProvideInfo.
+func FillProvideInfo(info *ProvideInfo) ProvideOption {
+	return provideOptionFunc(func(opts *provideOptions) {
+		opts.Info = info
+	})
+}
+
 // An InvokeOption modifies the default behavior of Invoke. It's included for
 // future functionality; currently, there are no concrete implementations.
 type InvokeOption interface {
@@ -156,6 +227,9 @@ type Container struct {
 
 	// Defer acyclic check on provide until Invoke.
 	deferAcyclicVerification bool
+
+	// invokerFn calls a function with arguments provided to Provide or Invoke.
+	invokerFn invokerFn
 }
 
 // containerWriter provides write access to the Container's underlying data
@@ -195,6 +269,9 @@ type containerStore interface {
 	getGroupProviders(name string, t reflect.Type) []provider
 
 	createGraph() *dot.Graph
+
+	// Returns invokerFn function to use when calling arguments.
+	invoker() invokerFn
 }
 
 // provider encapsulates a user-provided constructor.
@@ -228,6 +305,7 @@ func New(opts ...Option) *Container {
 		values:    make(map[key]reflect.Value),
 		groups:    make(map[key][]reflect.Value),
 		rand:      rand.New(rand.NewSource(time.Now().UnixNano())),
+		invokerFn: defaultInvoker,
 	}
 
 	for _, opt := range opts {
@@ -256,6 +334,36 @@ func setRand(r *rand.Rand) Option {
 	return optionFunc(func(c *Container) {
 		c.rand = r
 	})
+}
+
+// DryRun is an Option which, when set to true, disables invocation of functions supplied to
+// Provide and Invoke. Use this to build no-op containers.
+func DryRun(dry bool) Option {
+	return optionFunc(func(c *Container) {
+		if dry {
+			c.invokerFn = dryInvoker
+		} else {
+			c.invokerFn = defaultInvoker
+		}
+	})
+}
+
+// invokerFn specifies how the container calls user-supplied functions.
+type invokerFn func(fn reflect.Value, args []reflect.Value) (results []reflect.Value)
+
+func defaultInvoker(fn reflect.Value, args []reflect.Value) []reflect.Value {
+	return fn.Call(args)
+}
+
+// Generates zero values for results without calling the supplied function.
+func dryInvoker(fn reflect.Value, _ []reflect.Value) []reflect.Value {
+	ft := fn.Type()
+	results := make([]reflect.Value, ft.NumOut())
+	for i := 0; i < ft.NumOut(); i++ {
+		results[i] = reflect.Zero(fn.Type().Out(i))
+	}
+
+	return results
 }
 
 func (c *Container) knownTypes() []reflect.Type {
@@ -307,6 +415,12 @@ func (c *Container) getProviders(k key) []provider {
 		providers[i] = n
 	}
 	return providers
+}
+
+// invokerFn return a function to run when calling function provided to Provide or Invoke. Used for
+// running container in dry mode.
+func (c *Container) invoker() invokerFn {
+	return c.invokerFn
 }
 
 // Provide teaches the container how to build values of one or more types and
@@ -393,8 +507,7 @@ func (c *Container) Invoke(function interface{}, opts ...InvokeOption) error {
 			Reason: err,
 		}
 	}
-
-	returned := reflect.ValueOf(function).Call(args)
+	returned := c.invokerFn(reflect.ValueOf(function), args)
 	if len(returned) == 0 {
 		return nil
 	}
@@ -403,6 +516,7 @@ func (c *Container) Invoke(function interface{}, opts ...InvokeOption) error {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -454,9 +568,34 @@ func (c *Container) provide(ctor interface{}, opts provideOptions) error {
 		}
 		c.isVerifiedAcyclic = true
 	}
-
 	c.nodes = append(c.nodes, n)
 
+	// Record introspection info for caller if Info option is specified
+	if info := opts.Info; info != nil {
+		params := n.ParamList().DotParam()
+		results := n.ResultList().DotResult()
+
+		info.ID = (ID)(n.id)
+		info.Inputs = make([]*Input, len(params))
+		info.Outputs = make([]*Output, len(results))
+
+		for i, param := range params {
+			info.Inputs[i] = &Input{
+				t:        param.Type,
+				optional: param.Optional,
+				name:     param.Name,
+				group:    param.Group,
+			}
+		}
+
+		for i, res := range results {
+			info.Outputs[i] = &Output{
+				t:     res.Type,
+				name:  res.Name,
+				group: res.Group,
+			}
+		}
+	}
 	return nil
 }
 
@@ -664,12 +803,13 @@ func (n *node) Call(c containerStore) error {
 	}
 
 	receiver := newStagingContainerWriter()
-	results := reflect.ValueOf(n.ctor).Call(args)
+	results := c.invoker()(reflect.ValueOf(n.ctor), args)
 	if err := n.resultList.ExtractList(receiver, results); err != nil {
 		return errConstructorFailed{Func: n.location, Reason: err}
 	}
 	receiver.Commit(c)
 	n.called = true
+
 	return nil
 }
 
@@ -685,10 +825,27 @@ func isFieldOptional(f reflect.StructField) (bool, error) {
 		err = errf(
 			"invalid value %q for %q tag on field %v",
 			tag, _optionalTag, f.Name, err)
-
 	}
 
 	return optional, err
+}
+
+// Checks if ignoring unexported files in an In struct is allowed.
+// The struct field MUST be an _inType.
+func isIgnoreUnexportedSet(f reflect.StructField) (bool, error) {
+	tag := f.Tag.Get(_ignoreUnexportedTag)
+	if tag == "" {
+		return false, nil
+	}
+
+	allowed, err := strconv.ParseBool(tag)
+	if err != nil {
+		err = errf(
+			"invalid value %q for %q tag on field %v",
+			tag, _ignoreUnexportedTag, f.Name, err)
+	}
+
+	return allowed, err
 }
 
 // Checks that all direct dependencies of the provided param are present in

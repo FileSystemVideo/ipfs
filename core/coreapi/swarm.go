@@ -2,6 +2,9 @@ package coreapi
 
 import (
 	"context"
+	"sort"
+	"time"
+
 	coreiface "github.com/ipfs/interface-go-ipfs-core"
 	inet "github.com/libp2p/go-libp2p-core/network"
 	peer "github.com/libp2p/go-libp2p-core/peer"
@@ -9,8 +12,6 @@ import (
 	protocol "github.com/libp2p/go-libp2p-core/protocol"
 	swarm "github.com/libp2p/go-libp2p-swarm"
 	ma "github.com/multiformats/go-multiaddr"
-	"sort"
-	"time"
 )
 
 type SwarmAPI CoreAPI
@@ -100,14 +101,6 @@ func (api *SwarmAPI) LocalAddrs(context.Context) ([]ma.Multiaddr, error) {
 	return api.peerHost.Addrs(), nil
 }
 
-//打印nat状态
-func (api *SwarmAPI) Nat(context.Context) (inet.Reachability, error) {
-	if api.peerHost == nil {
-		return inet.ReachabilityUnknown, coreiface.ErrOffline
-	}
-	return api.nd.PeerHost.GetNatStatus(), nil
-}
-
 func (api *SwarmAPI) ListenAddrs(context.Context) ([]ma.Multiaddr, error) {
 	if api.peerHost == nil {
 		return nil, coreiface.ErrOffline
@@ -123,18 +116,16 @@ func (api *SwarmAPI) Peers(context.Context) ([]coreiface.ConnectionInfo, error) 
 
 	conns := api.peerHost.Network().Conns()
 
-	var out []coreiface.ConnectionInfo
+	out := make([]coreiface.ConnectionInfo, 0, len(conns))
 	for _, c := range conns {
-		pid := c.RemotePeer()
-		addr := c.RemoteMultiaddr()
 
 		ci := &connInfo{
 			peerstore: api.peerstore,
 			conn:      c,
 			dir:       c.Stat().Direction,
 
-			addr: addr,
-			peer: pid,
+			addr: c.RemoteMultiaddr(),
+			peer: c.RemotePeer(),
 		}
 
 		/*
@@ -150,7 +141,6 @@ func (api *SwarmAPI) Peers(context.Context) ([]coreiface.ConnectionInfo, error) 
 
 	return out, nil
 }
-
 
 func (ci *connInfo) ID() peer.ID {
 	return ci.peer

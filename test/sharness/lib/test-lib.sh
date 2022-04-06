@@ -98,6 +98,7 @@ test "$TEST_NO_PLUGIN" != 1 && test "$TEST_OS" = "LINUX" && test_set_prereq PLUG
 
 # this may not be available, skip a few dependent tests
 type socat >/dev/null 2>&1 && test_set_prereq SOCAT
+type unzip >/dev/null 2>&1 && test_set_prereq UNZIP
 
 
 # Set a prereq as error messages are often different on Windows/Cygwin
@@ -193,7 +194,7 @@ test_init_ipfs() {
 
   test_expect_success "ipfs init succeeds" '
     export IPFS_PATH="$(pwd)/.ipfs" &&
-    ipfs init --profile=test -b=2048 > /dev/null
+    ipfs init --profile=test > /dev/null
   '
 
   test_expect_success "prepare config -- mounting" '
@@ -268,7 +269,7 @@ test_launch_ipfs_daemon() {
 
   # wait for api file to show up
   test_expect_success "api file shows up" '
-    test_wait_for_file 50 100ms "$IPFS_PATH/api"
+    test_wait_for_file 50 200ms "$IPFS_PATH/api"
   '
 
   test_set_address_vars actual_daemon
@@ -280,9 +281,13 @@ test_launch_ipfs_daemon() {
   '
 }
 
+test_launch_ipfs_daemon_without_network() {
+  test_launch_ipfs_daemon --offline "$@"
+}
+
 do_umount() {
   if [ "$(uname -s)" = "Linux" ]; then
-  fusermount -u "$1"
+  fusermount -z -u "$1"
   else
   umount "$1"
   fi
@@ -443,10 +448,46 @@ file_size() {
     $_STAT "$1"
 }
 
+# len 46: 2048-bit RSA keys, b58mh-encoded
+# len 52: ED25519 keys, b58mh-encoded
+# len 56: 2048-bit RSA keys, base36-encoded
+# len 62: ED25519 keys, base36-encoded
 test_check_peerid() {
   peeridlen=$(echo "$1" | tr -dC "[:alnum:]" | wc -c | tr -d " ") &&
-  test "$peeridlen" = "46" || {
+  test "$peeridlen" = "46" -o "$peeridlen" = "52" -o "$peeridlen" = "56" -o "$peeridlen" = "62" || {
     echo "Bad peerid '$1' with len '$peeridlen'"
+    return 1
+  }
+}
+
+test_check_rsa2048_b58mh_peerid() {
+  peeridlen=$(echo "$1" | tr -dC "[:alnum:]" | wc -c | tr -d " ") &&
+  test "$peeridlen" = "46" || {
+    echo "Bad RSA2048 B58MH peerid '$1' with len '$peeridlen'"
+    return 1
+  }
+}
+
+test_check_ed25519_b58mh_peerid() {
+  peeridlen=$(echo "$1" | tr -dC "[:alnum:]" | wc -c | tr -d " ") &&
+  test "$peeridlen" = "52" || {
+    echo "Bad ED25519 B58MH peerid '$1' with len '$peeridlen'"
+    return 1
+  }
+}
+
+test_check_rsa2048_base36_peerid() {
+  peeridlen=$(echo "$1" | tr -dC "[:alnum:]" | wc -c | tr -d " ") &&
+  test "$peeridlen" = "56" || {
+    echo "Bad RSA2048 B36CID peerid '$1' with len '$peeridlen'"
+    return 1
+  }
+}
+
+test_check_ed25519_base36_peerid() {
+  peeridlen=$(echo "$1" | tr -dC "[:alnum:]" | wc -c | tr -d " ") &&
+  test "$peeridlen" = "62" || {
+    echo "Bad ED25519 B36CID peerid '$1' with len '$peeridlen'"
     return 1
   }
 }

@@ -10,7 +10,7 @@ import (
 	cid "github.com/ipfs/go-cid"
 	cbor "github.com/ipfs/go-ipld-cbor"
 	format "github.com/ipfs/go-ipld-format"
-	dag "github.com/ipfs/go-merkledag"
+	"github.com/ipfs/go-merkledag"
 
 	util "github.com/ipld/go-car/util"
 )
@@ -58,7 +58,7 @@ func WriteCarWithWalker(ctx context.Context, ds format.NodeGetter, roots []cid.C
 	cw := &carWriter{ds: ds, w: w, walk: walk}
 	seen := cid.NewSet()
 	for _, r := range roots {
-		if err := dag.Walk(ctx, cw.enumGetLinks, r, seen.Visit); err != nil {
+		if err := merkledag.Walk(ctx, cw.enumGetLinks, r, seen.Visit); err != nil {
 			return err
 		}
 	}
@@ -77,7 +77,7 @@ func ReadHeader(br *bufio.Reader) (*CarHeader, error) {
 
 	var ch CarHeader
 	if err := cbor.DecodeInto(hb, &ch); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("invalid header: %v", err)
 	}
 
 	return &ch, nil
@@ -130,12 +130,12 @@ func NewCarReader(r io.Reader) (*CarReader, error) {
 		return nil, err
 	}
 
-	if len(ch.Roots) == 0 {
-		return nil, fmt.Errorf("empty car")
-	}
-
 	if ch.Version != 1 {
 		return nil, fmt.Errorf("invalid car version: %d", ch.Version)
+	}
+
+	if len(ch.Roots) == 0 {
+		return nil, fmt.Errorf("empty car, no roots")
 	}
 
 	return &CarReader{
@@ -183,17 +183,16 @@ func loadCarFast(s batchStore, cr *CarReader) (*CarHeader, error) {
 	var buf []blocks.Block
 	for {
 		blk, err := cr.Next()
-		switch err {
-		case io.EOF:
-			if len(buf) > 0 {
-				if err := s.PutMany(buf); err != nil {
-					return nil, err
+		if err != nil {
+			if err == io.EOF {
+				if len(buf) > 0 {
+					if err := s.PutMany(buf); err != nil {
+						return nil, err
+					}
 				}
+				return cr.Header, nil
 			}
-			return cr.Header, nil
-		default:
 			return nil, err
-		case nil:
 		}
 
 		buf = append(buf, blk)
@@ -208,15 +207,13 @@ func loadCarFast(s batchStore, cr *CarReader) (*CarHeader, error) {
 }
 
 func loadCarSlow(s Store, cr *CarReader) (*CarHeader, error) {
-
 	for {
 		blk, err := cr.Next()
-		switch err {
-		case io.EOF:
-			return cr.Header, nil
-		default:
+		if err != nil {
+			if err == io.EOF {
+				return cr.Header, nil
+			}
 			return nil, err
-		case nil:
 		}
 
 		if err := s.Put(blk); err != nil {

@@ -31,15 +31,7 @@ type Transport struct {
 	key ci.PrivKey
 }
 
-// New constructs a new insecure transport.
-// Deprecated: use NewWithIdentity instead.
-func New(id peer.ID) *Transport {
-	return &Transport{
-		id: id,
-	}
-}
-
-// New constructs a new insecure transport. The provided private key
+// NewWithIdentity constructs a new insecure transport. The provided private key
 // is stored and returned from LocalPrivateKey to satisfy the
 // SecureTransport interface, and the public key is sent to
 // remote peers. No security is provided.
@@ -61,14 +53,14 @@ func (t *Transport) LocalPrivateKey() ci.PrivKey {
 	return t.key
 }
 
-// SecureInbound *pretends to secure* an outbound connection to the given peer.
+// SecureInbound *pretends to secure* an inbound connection to the given peer.
 // It sends the local peer's ID and public key, and receives the same from the remote peer.
 // No validation is performed as to the authenticity or ownership of the provided public key,
 // and the key exchange provides no security.
 //
 // SecureInbound may fail if the remote peer sends an ID and public key that are inconsistent
 // with each other, or if a network error occurs during the ID exchange.
-func (t *Transport) SecureInbound(ctx context.Context, insecure net.Conn) (sec.SecureConn, error) {
+func (t *Transport) SecureInbound(ctx context.Context, insecure net.Conn, p peer.ID) (sec.SecureConn, error) {
 	conn := &Conn{
 		Conn:         insecure,
 		local:        t.id,
@@ -78,6 +70,10 @@ func (t *Transport) SecureInbound(ctx context.Context, insecure net.Conn) (sec.S
 	err := conn.runHandshakeSync()
 	if err != nil {
 		return nil, err
+	}
+
+	if t.key != nil && p != "" && p != conn.remote {
+		return nil, fmt.Errorf("remote peer sent unexpected peer ID. expected=%s received=%s", p, conn.remote)
 	}
 
 	return conn, nil

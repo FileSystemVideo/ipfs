@@ -67,7 +67,7 @@ IPFS_CMD="ipfs"
 
 test_filestore_adds() {
   test_expect_success "$IPFS_CMD add nocopy add succeeds" '
-    HASH=$($IPFS_CMD add --raw-leaves --nocopy -r -q somedir | tail -n1)
+    HASH=$($IPFS_CMD add --raw-leaves --nocopy -r -Q somedir)
   '
 
   test_expect_success "nocopy add has right hash" '
@@ -187,7 +187,7 @@ test_init
 
 # must be in offline mode so tests that retrieve non-existent blocks
 # doesn't hang
-test_launch_ipfs_daemon --offline
+test_launch_ipfs_daemon_without_network
 
 test_filestore_adds
 
@@ -251,7 +251,7 @@ test_init
 
 # must be in offline mode so tests that retrieve non-existent blocks
 # doesn't hang
-test_launch_ipfs_daemon --offline
+test_launch_ipfs_daemon_without_network
 
 test_filestore_adds
 

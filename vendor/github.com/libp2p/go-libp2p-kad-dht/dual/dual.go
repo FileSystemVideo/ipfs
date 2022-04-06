@@ -4,6 +4,7 @@ package dual
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	dht "github.com/libp2p/go-libp2p-kad-dht"
@@ -15,6 +16,7 @@ import (
 	"github.com/libp2p/go-libp2p-core/protocol"
 	"github.com/libp2p/go-libp2p-core/routing"
 	kb "github.com/libp2p/go-libp2p-kbucket"
+	"github.com/libp2p/go-libp2p-kbucket/peerdiversity"
 	helper "github.com/libp2p/go-libp2p-routing-helpers"
 	ma "github.com/multiformats/go-multiaddr"
 
@@ -41,32 +43,95 @@ var (
 	_ routing.ValueStore     = (*DHT)(nil)
 )
 
+var (
+	maxPrefixCountPerCpl = 2
+	maxPrefixCount       = 3
+)
+
+type config struct {
+	wan, lan []dht.Option
+}
+
+func (cfg *config) apply(opts ...Option) error {
+	for i, o := range opts {
+		if err := o(cfg); err != nil {
+			return fmt.Errorf("dual dht option %d failed: %w", i, err)
+		}
+	}
+	return nil
+}
+
+// Option is an option used to configure the Dual DHT.
+type Option func(*config) error
+
+// WanDHTOption applies the given DHT options to the WAN DHT.
+func WanDHTOption(opts ...dht.Option) Option {
+	return func(c *config) error {
+		c.wan = append(c.wan, opts...)
+		return nil
+	}
+}
+
+// LanDHTOption applies the given DHT options to the LAN DHT.
+func LanDHTOption(opts ...dht.Option) Option {
+	return func(c *config) error {
+		c.lan = append(c.lan, opts...)
+		return nil
+	}
+}
+
+// DHTOption applies the given DHT options to both the WAN and the LAN DHTs.
+func DHTOption(opts ...dht.Option) Option {
+	return func(c *config) error {
+		c.lan = append(c.lan, opts...)
+		c.wan = append(c.wan, opts...)
+		return nil
+	}
+}
+
 // New creates a new DualDHT instance. Options provided are forwarded on to the two concrete
 // IpfsDHT internal constructions, modulo additional options used by the Dual DHT to enforce
 // the LAN-vs-WAN distinction.
 // Note: query or routing table functional options provided as arguments to this function
 // will be overriden by this constructor.
-func New(ctx context.Context, h host.Host, options ...dht.Option) (*DHT, error) {
-	wanOpts := append(options,
-		dht.QueryFilter(dht.PublicQueryFilter),
-		dht.RoutingTableFilter(dht.PublicRoutingTableFilter),
+func New(ctx context.Context, h host.Host, options ...Option) (*DHT, error) {
+	var cfg config
+	err := cfg.apply(
+		WanDHTOption(
+			dht.QueryFilter(dht.PublicQueryFilter),
+			dht.RoutingTableFilter(dht.PublicRoutingTableFilter),
+			dht.RoutingTablePeerDiversityFilter(dht.NewRTPeerDiversityFilter(h, maxPrefixCountPerCpl, maxPrefixCount)),
+		),
 	)
-	wan, err := dht.New(ctx, h, wanOpts...)
+	if err != nil {
+		return nil, err
+	}
+	err = cfg.apply(
+		LanDHTOption(
+			dht.ProtocolExtension(LanExtension),
+			dht.QueryFilter(dht.PrivateQueryFilter),
+			dht.RoutingTableFilter(dht.PrivateRoutingTableFilter),
+		),
+	)
+	if err != nil {
+		return nil, err
+	}
+	err = cfg.apply(options...)
+	if err != nil {
+		return nil, err
+	}
+
+	wan, err := dht.New(ctx, h, cfg.wan...)
 	if err != nil {
 		return nil, err
 	}
 
 	// Unless overridden by user supplied options, the LAN DHT should default
 	// to 'AutoServer' mode.
-	lanOpts := append(options,
-		dht.ProtocolExtension(LanExtension),
-		dht.QueryFilter(dht.PrivateQueryFilter),
-		dht.RoutingTableFilter(dht.PrivateRoutingTableFilter),
-	)
 	if wan.Mode() != dht.ModeClient {
-		lanOpts = append(lanOpts, dht.Mode(dht.ModeServer))
+		cfg.lan = append(cfg.lan, dht.Mode(dht.ModeServer))
 	}
-	lan, err := dht.New(ctx, h, lanOpts...)
+	lan, err := dht.New(ctx, h, cfg.lan...)
 	if err != nil {
 		return nil, err
 	}
@@ -93,11 +158,26 @@ func (dht *DHT) Provide(ctx context.Context, key cid.Cid, announce bool) error {
 	return dht.LAN.Provide(ctx, key, announce)
 }
 
+// GetRoutingTableDiversityStats fetches the Routing Table Diversity Stats.
+func (dht *DHT) GetRoutingTableDiversityStats() []peerdiversity.CplDiversityStats {
+	if dht.WANActive() {
+		return dht.WAN.GetRoutingTableDiversityStats()
+	}
+	return nil
+}
+
 // FindProvidersAsync searches for peers who are able to provide a given key
 func (dht *DHT) FindProvidersAsync(ctx context.Context, key cid.Cid, count int) <-chan peer.AddrInfo {
 	reqCtx, cancel := context.WithCancel(ctx)
 	outCh := make(chan peer.AddrInfo)
-	subCtx, errCh := routing.RegisterForQueryEvents(reqCtx)
+
+	// Register for and merge query events if we care about them.
+	subCtx := reqCtx
+	var evtCh <-chan *routing.QueryEvent
+	if routing.SubscribesToQueryEvents(ctx) {
+		subCtx, evtCh = routing.RegisterForQueryEvents(reqCtx)
+	}
+
 	wanCh := dht.WAN.FindProvidersAsync(subCtx, key, count)
 	lanCh := dht.LAN.FindProvidersAsync(subCtx, key, count)
 	zeroCount := (count == 0)
@@ -111,8 +191,10 @@ func (dht *DHT) FindProvidersAsync(ctx context.Context, key cid.Cid, count int) 
 		for (zeroCount || count > 0) && (wanCh != nil || lanCh != nil) {
 			var ok bool
 			select {
-			case qEv, ok = <-errCh:
-				if ok && qEv != nil && qEv.Type != routing.QueryError {
+			case qEv, ok = <-evtCh:
+				if !ok {
+					evtCh = nil
+				} else if qEv != nil && qEv.Type != routing.QueryError {
 					routing.PublishQueryEvent(reqCtx, qEv)
 				}
 				continue

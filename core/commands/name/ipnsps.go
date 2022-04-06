@@ -5,10 +5,11 @@ import (
 	"io"
 	"strings"
 
-	"github.com/ipfs/go-ipfs-cmds"
+	cmds "github.com/ipfs/go-ipfs-cmds"
 	"github.com/ipfs/go-ipfs/core/commands/cmdenv"
+	ke "github.com/ipfs/go-ipfs/core/commands/keyencode"
 	"github.com/libp2p/go-libp2p-core/peer"
-	"github.com/libp2p/go-libp2p-record"
+	record "github.com/libp2p/go-libp2p-record"
 )
 
 type ipnsPubsubState struct {
@@ -42,7 +43,7 @@ Note: this command is experimental and subject to change as the system is refine
 
 var ipnspsStateCmd = &cmds.Command{
 	Helptext: cmds.HelpText{
-		Tagline: "Query the state of IPNS pubsub",
+		Tagline: "Query the state of IPNS pubsub.",
 	},
 	Run: func(req *cmds.Request, res cmds.ResponseEmitter, env cmds.Environment) error {
 		n, err := cmdenv.GetNode(env)
@@ -70,9 +71,17 @@ var ipnspsStateCmd = &cmds.Command{
 
 var ipnspsSubsCmd = &cmds.Command{
 	Helptext: cmds.HelpText{
-		Tagline: "Show current name subscriptions",
+		Tagline: "Show current name subscriptions.",
+	},
+	Options: []cmds.Option{
+		ke.OptionIPNSBase,
 	},
 	Run: func(req *cmds.Request, res cmds.ResponseEmitter, env cmds.Environment) error {
+		keyEnc, err := ke.KeyEncoderFromString(req.Options[ke.OptionIPNSBase.Name()].(string))
+		if err != nil {
+			return err
+		}
+
 		n, err := cmdenv.GetNode(env)
 		if err != nil {
 			return err
@@ -93,7 +102,7 @@ var ipnspsSubsCmd = &cmds.Command{
 				log.Errorf("ipns key not a valid peer ID: %s", err)
 				continue
 			}
-			paths = append(paths, "/ipns/"+peer.Encode(pid))
+			paths = append(paths, "/ipns/"+keyEnc.FormatID(pid))
 		}
 
 		return cmds.EmitOnce(res, &stringList{paths})
@@ -106,7 +115,7 @@ var ipnspsSubsCmd = &cmds.Command{
 
 var ipnspsCancelCmd = &cmds.Command{
 	Helptext: cmds.HelpText{
-		Tagline: "Cancel a name subscription",
+		Tagline: "Cancel a name subscription.",
 	},
 	Run: func(req *cmds.Request, res cmds.ResponseEmitter, env cmds.Environment) error {
 		n, err := cmdenv.GetNode(env)

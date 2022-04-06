@@ -3,37 +3,25 @@ package websocket
 
 import (
 	"context"
-	"time"
+
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/transport"
 	tptu "github.com/libp2p/go-libp2p-transport-upgrader"
 	ma "github.com/multiformats/go-multiaddr"
 	mafmt "github.com/multiformats/go-multiaddr-fmt"
-	manet "github.com/multiformats/go-multiaddr-net"
+	manet "github.com/multiformats/go-multiaddr/net"
 )
-
-// WsProtocol is the multiaddr protocol definition for this transport.
-//
-// Deprecated: use `ma.ProtocolWithCode(ma.P_WS)
-var WsProtocol = ma.ProtocolWithCode(ma.P_WS)
 
 // WsFmt is multiaddr formatter for WsProtocol
 var WsFmt = mafmt.And(mafmt.TCP, mafmt.Base(ma.P_WS))
-
-// WsCodec is the multiaddr-net codec definition for the websocket transport
-var WsCodec = &manet.NetCodec{
-	NetAddrNetworks:  []string{"websocket"},
-	ProtocolName:     "ws",
-	ConvertMultiaddr: ConvertWebsocketMultiaddrToNetAddr,
-	ParseNetAddr:     ParseWebsocketNetAddr,
-}
 
 // This is _not_ WsFmt because we want the transport to stick to dialing fully
 // resolved addresses.
 var dialMatcher = mafmt.And(mafmt.IP, mafmt.Base(ma.P_TCP), mafmt.Base(ma.P_WS))
 
 func init() {
-	manet.RegisterNetCodec(WsCodec)
+	manet.RegisterFromNetAddr(ParseWebsocketNetAddr, "websocket")
+	manet.RegisterToNetAddr(ConvertWebsocketMultiaddrToNetAddr, "ws")
 }
 
 var _ transport.Transport = (*WebsocketTransport)(nil)
@@ -41,10 +29,6 @@ var _ transport.Transport = (*WebsocketTransport)(nil)
 // WebsocketTransport is the actual go-libp2p transport
 type WebsocketTransport struct {
 	Upgrader *tptu.Upgrader
-}
-
-func (t *WebsocketTransport) Ping(addr ma.Multiaddr, timeout time.Duration) error {
-	return nil
 }
 
 func New(u *tptu.Upgrader) *WebsocketTransport {
@@ -56,7 +40,7 @@ func (t *WebsocketTransport) CanDial(a ma.Multiaddr) bool {
 }
 
 func (t *WebsocketTransport) Protocols() []int {
-	return []int{WsProtocol.Code}
+	return []int{ma.ProtocolWithCode(ma.P_WS).Code}
 }
 
 func (t *WebsocketTransport) Proxy() bool {

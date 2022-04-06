@@ -67,9 +67,10 @@ func BootstrapConfigWithPeers(pis []peer.AddrInfo) BootstrapConfig {
 	return cfg
 }
 
-// 启动IpfsNode引导。
-// 此函数将定期检查打开的连接数，如果连接数太少，则会启动与已知引导对等机的连接。
-// 它还启动子系统引导（即路由）。
+// Bootstrap kicks off IpfsNode bootstrapping. This function will periodically
+// check the number of open connections and -- if there are too few -- initiate
+// connections to well-known bootstrap peers. It also kicks off subsystem
+// bootstrapping (i.e. routing).
 func Bootstrap(id peer.ID, host host.Host, rt routing.Routing, cfg BootstrapConfig) (io.Closer, error) {
 
 	// make a signal to wait for one bootstrap round to complete.
@@ -92,11 +93,11 @@ func Bootstrap(id peer.ID, host host.Host, rt routing.Routing, cfg BootstrapConf
 		<-doneWithRound
 	}
 
-	// 启动节点的定期引导
+	// kick off the node's periodic bootstrapping
 	proc := periodicproc.Tick(cfg.Period, periodic)
 	proc.Go(periodic) // run one right now.
 
-	// 开始路由引导
+	// kick off Routing.Bootstrap
 	if rt != nil {
 		ctx := goprocessctx.OnClosingContext(proc)
 		if err := rt.Bootstrap(ctx); err != nil {
@@ -116,9 +117,10 @@ func bootstrapRound(ctx context.Context, host host.Host, cfg BootstrapConfig) er
 	defer cancel()
 	id := host.ID()
 
-	// 从配置中获取引导对等点。在这里检索它们可以确保我们能够观察到客户机配置的变化。
+	// get bootstrap peers from config. retrieving them here makes
+	// sure we remain observant of changes to client configuration.
 	peers := cfg.BootstrapPeers()
-	// 确定要打开的引导连接数
+	// determine how many bootstrap connections to open
 	connected := host.Network().Peers()
 	if len(connected) >= cfg.MinPeerThreshold {
 		log.Debugf("%s core bootstrap skipped -- connected to %d (> %d) nodes",
@@ -127,7 +129,7 @@ func bootstrapRound(ctx context.Context, host host.Host, cfg BootstrapConfig) er
 	}
 	numToDial := cfg.MinPeerThreshold - len(connected)
 
-	// 筛选出我们已经连接到的引导节点
+	// filter out bootstrap nodes we are already connected to
 	var notConnected []peer.AddrInfo
 	for _, p := range peers {
 		if host.Network().Connectedness(p.ID) != network.Connected {
@@ -135,13 +137,13 @@ func bootstrapRound(ctx context.Context, host host.Host, cfg BootstrapConfig) er
 		}
 	}
 
-	// 如果已连接到所有的引导对等节点，返回
+	// if connected to all bootstrap peer candidates, exit
 	if len(notConnected) < 1 {
 		log.Debugf("%s no more bootstrap peers to create %d connections", id, numToDial)
 		return ErrNotEnoughBootstrapPeers
 	}
 
-	// 连接到随机的引导候选集
+	// connect to a random susbset of bootstrap candidates
 	randSubset := randomSubsetOfPeers(notConnected, numToDial)
 
 	log.Debugf("%s bootstrapping to %d nodes: %s", id, numToDial, randSubset)
@@ -157,8 +159,10 @@ func bootstrapConnect(ctx context.Context, ph host.Host, peers []peer.AddrInfo) 
 	var wg sync.WaitGroup
 	for _, p := range peers {
 
-		// 异步执行，因为当同步执行时，如果一个“Connect”调用挂起，后续调用更有可能由于过期上下文而失败/中止。
-		// 另外，异步执行拨号速度
+		// performed asynchronously because when performed synchronously, if
+		// one `Connect` call hangs, subsequent calls are more likely to
+		// fail/abort due to an expiring context.
+		// Also, performed asynchronously for dial speed.
 
 		wg.Add(1)
 		go func(p peer.AddrInfo) {

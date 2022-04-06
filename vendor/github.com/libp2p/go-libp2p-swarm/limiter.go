@@ -10,7 +10,6 @@ import (
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/transport"
 
-	addrutil "github.com/libp2p/go-addr-util"
 	ma "github.com/multiformats/go-multiaddr"
 )
 
@@ -140,16 +139,26 @@ func (dl *dialLimiter) freePeerToken(dj *dialJob) {
 func (dl *dialLimiter) finishedDial(dj *dialJob) {
 	dl.lk.Lock()
 	defer dl.lk.Unlock()
-
-	if addrutil.IsFDCostlyTransport(dj.addr) {
+	if dl.shouldConsumeFd(dj.addr) {
 		dl.freeFDToken()
 	}
 
 	dl.freePeerToken(dj)
 }
 
+func (dl *dialLimiter) shouldConsumeFd(addr ma.Multiaddr) bool {
+	// we don't consume FD's for relay addresses for now as they will be consumed when the Relay Transport
+	// actually dials the Relay server. That dial call will also pass through this limiter with
+	// the address of the relay server i.e. non-relay address.
+	_, err := addr.ValueForProtocol(ma.P_CIRCUIT)
+
+	isRelay := err == nil
+
+	return !isRelay && isFdConsumingAddr(addr)
+}
+
 func (dl *dialLimiter) addCheckFdLimit(dj *dialJob) {
-	if addrutil.IsFDCostlyTransport(dj.addr) {
+	if dl.shouldConsumeFd(dj.addr) {
 		if dl.fdConsuming >= dl.fdLimit {
 			log.Debugf("[limiter] blocked dial waiting on FD token; peer: %s; addr: %s; consuming: %d; "+
 				"limit: %d; waiting: %d", dj.peer, dj.addr, dl.fdConsuming, dl.fdLimit, len(dl.waitingOnFd))

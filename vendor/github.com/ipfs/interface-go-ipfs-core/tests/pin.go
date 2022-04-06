@@ -18,7 +18,7 @@ import (
 func (tp *TestSuite) TestPin(t *testing.T) {
 	tp.hasApi(t, func(api iface.CoreAPI) error {
 		if api.Pin() == nil {
-			return apiNotImplemented
+			return errAPINotImplemented
 		}
 		return nil
 	})
@@ -28,6 +28,7 @@ func (tp *TestSuite) TestPin(t *testing.T) {
 	t.Run("TestPinRecursive", tp.TestPinRecursive)
 	t.Run("TestPinLsIndirect", tp.TestPinLsIndirect)
 	t.Run("TestPinLsPrecedence", tp.TestPinLsPrecedence)
+	t.Run("TestPinIsPinned", tp.TestPinIsPinned)
 }
 
 func (tp *TestSuite) TestPinAdd(t *testing.T) {
@@ -67,7 +68,7 @@ func (tp *TestSuite) TestPinSimple(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	list, err := api.Pin().Ls(ctx)
+	list, err := accPins(api.Pin().Ls(ctx))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,12 +85,14 @@ func (tp *TestSuite) TestPinSimple(t *testing.T) {
 		t.Error("unexpected pin type")
 	}
 
+	assertIsPinned(t, ctx, api, p, "recursive")
+
 	err = api.Pin().Rm(ctx, p)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	list, err = api.Pin().Ls(ctx)
+	list, err = accPins(api.Pin().Ls(ctx))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -141,7 +144,7 @@ func (tp *TestSuite) TestPinRecursive(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	list, err := api.Pin().Ls(ctx)
+	list, err := accPins(api.Pin().Ls(ctx))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +153,7 @@ func (tp *TestSuite) TestPinRecursive(t *testing.T) {
 		t.Errorf("unexpected pin list len: %d", len(list))
 	}
 
-	list, err = api.Pin().Ls(ctx, opt.Pin.Type.Direct())
+	list, err = accPins(api.Pin().Ls(ctx, opt.Pin.Ls.Direct()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,10 +163,10 @@ func (tp *TestSuite) TestPinRecursive(t *testing.T) {
 	}
 
 	if list[0].Path().String() != path.IpldPath(nd3.Cid()).String() {
-		t.Errorf("unexpected path, %s != %s", list[0].Path().String(), path.IpfsPath(nd2.Cid()).String())
+		t.Errorf("unexpected path, %s != %s", list[0].Path().String(), path.IpfsPath(nd3.Cid()).String())
 	}
 
-	list, err = api.Pin().Ls(ctx, opt.Pin.Type.Recursive())
+	list, err = accPins(api.Pin().Ls(ctx, opt.Pin.Ls.Recursive()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,10 +176,10 @@ func (tp *TestSuite) TestPinRecursive(t *testing.T) {
 	}
 
 	if list[0].Path().String() != path.IpldPath(nd2.Cid()).String() {
-		t.Errorf("unexpected path, %s != %s", list[0].Path().String(), path.IpldPath(nd3.Cid()).String())
+		t.Errorf("unexpected path, %s != %s", list[0].Path().String(), path.IpldPath(nd2.Cid()).String())
 	}
 
-	list, err = api.Pin().Ls(ctx, opt.Pin.Type.Indirect())
+	list, err = accPins(api.Pin().Ls(ctx, opt.Pin.Ls.Indirect()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,7 +189,7 @@ func (tp *TestSuite) TestPinRecursive(t *testing.T) {
 	}
 
 	if list[0].Path().Cid().String() != p0.Cid().String() {
-		t.Error("unexpected path")
+		t.Errorf("unexpected path, %s != %s", list[0].Path().Cid().String(), p0.Cid().String())
 	}
 
 	res, err := api.Pin().Verify(ctx)
@@ -360,6 +363,39 @@ func (tp *TestSuite) TestPinLsPrecedenceRecursiveDirect(t *testing.T) {
 	assertPinTypes(t, ctx, api, []cidContainer{grandparent, parent}, []cidContainer{}, []cidContainer{leaf})
 }
 
+func (tp *TestSuite) TestPinIsPinned(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	api, err := tp.makeAPI(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	leaf, parent, grandparent := getThreeChainedNodes(t, ctx, api, "foofoo")
+
+	assertNotPinned(t, ctx, api, path.IpldPath(grandparent.Cid()))
+	assertNotPinned(t, ctx, api, path.IpldPath(parent.Cid()))
+	assertNotPinned(t, ctx, api, path.IpldPath(leaf.Cid()))
+
+	err = api.Pin().Add(ctx, path.IpldPath(parent.Cid()), opt.Pin.Recursive(true))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertNotPinned(t, ctx, api, path.IpldPath(grandparent.Cid()))
+	assertIsPinned(t, ctx, api, path.IpldPath(parent.Cid()), "recursive")
+	assertIsPinned(t, ctx, api, path.IpldPath(leaf.Cid()), "indirect")
+
+	err = api.Pin().Add(ctx, path.IpldPath(grandparent.Cid()), opt.Pin.Recursive(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	assertIsPinned(t, ctx, api, path.IpldPath(grandparent.Cid()), "direct")
+	assertIsPinned(t, ctx, api, path.IpldPath(parent.Cid()), "recursive")
+	assertIsPinned(t, ctx, api, path.IpldPath(leaf.Cid()), "indirect")
+}
+
 type cidContainer interface {
 	Cid() cid.Cid
 }
@@ -390,21 +426,21 @@ func getThreeChainedNodes(t *testing.T, ctx context.Context, api iface.CoreAPI, 
 func assertPinTypes(t *testing.T, ctx context.Context, api iface.CoreAPI, recusive, direct, indirect []cidContainer) {
 	assertPinLsAllConsistency(t, ctx, api)
 
-	list, err := api.Pin().Ls(ctx, opt.Pin.Type.Recursive())
+	list, err := accPins(api.Pin().Ls(ctx, opt.Pin.Ls.Recursive()))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	assertPinCids(t, list, recusive...)
 
-	list, err = api.Pin().Ls(ctx, opt.Pin.Type.Direct())
+	list, err = accPins(api.Pin().Ls(ctx, opt.Pin.Ls.Direct()))
 	if err != nil {
 		t.Fatal(err)
 	}
 
 	assertPinCids(t, list, direct...)
 
-	list, err = api.Pin().Ls(ctx, opt.Pin.Type.Indirect())
+	list, err = accPins(api.Pin().Ls(ctx, opt.Pin.Ls.Indirect()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -454,7 +490,7 @@ func assertPinCids(t *testing.T, pins []iface.Pin, cids ...cidContainer) {
 // assertPinLsAllConsistency verifies that listing all pins gives the same result as listing the pin types individually
 func assertPinLsAllConsistency(t *testing.T, ctx context.Context, api iface.CoreAPI) {
 	t.Helper()
-	allPins, err := api.Pin().Ls(ctx)
+	allPins, err := accPins(api.Pin().Ls(ctx))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -466,9 +502,9 @@ func assertPinLsAllConsistency(t *testing.T, ctx context.Context, api iface.Core
 
 	all, recursive, direct, indirect := cid.NewSet(), cid.NewSet(), cid.NewSet(), cid.NewSet()
 	typeMap := map[string]*pinTypeProps{
-		"recursive": {recursive, opt.Pin.Type.Recursive()},
-		"direct":    {direct, opt.Pin.Type.Direct()},
-		"indirect":  {indirect, opt.Pin.Type.Indirect()},
+		"recursive": {recursive, opt.Pin.Ls.Recursive()},
+		"direct":    {direct, opt.Pin.Ls.Direct()},
+		"indirect":  {indirect, opt.Pin.Ls.Indirect()},
 	}
 
 	for _, p := range allPins {
@@ -485,7 +521,7 @@ func assertPinLsAllConsistency(t *testing.T, ctx context.Context, api iface.Core
 	}
 
 	for typeStr, pinProps := range typeMap {
-		pins, err := api.Pin().Ls(ctx, pinProps.PinLsOption)
+		pins, err := accPins(api.Pin().Ls(ctx, pinProps.PinLsOption))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -504,4 +540,62 @@ func assertPinLsAllConsistency(t *testing.T, ctx context.Context, api iface.Core
 			}
 		}
 	}
+}
+
+func assertIsPinned(t *testing.T, ctx context.Context, api iface.CoreAPI, p path.Path, typeStr string) {
+	t.Helper()
+	withType, err := opt.Pin.IsPinned.Type(typeStr)
+	if err != nil {
+		t.Fatal("unhandled pin type")
+	}
+
+	whyPinned, pinned, err := api.Pin().IsPinned(ctx, p, withType)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !pinned {
+		t.Fatalf("%s expected to be pinned with type %s", p, typeStr)
+	}
+
+	switch typeStr {
+	case "recursive", "direct":
+		if typeStr != whyPinned {
+			t.Fatalf("reason for pinning expected to be %s for %s, got %s", typeStr, p, whyPinned)
+		}
+	case "indirect":
+		if whyPinned == "" {
+			t.Fatalf("expected to have a pin reason for %s", p)
+		}
+	}
+}
+
+func assertNotPinned(t *testing.T, ctx context.Context, api iface.CoreAPI, p path.Path) {
+	t.Helper()
+
+	_, pinned, err := api.Pin().IsPinned(ctx, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if pinned {
+		t.Fatalf("%s expected to not be pinned", p)
+	}
+}
+
+func accPins(pins <-chan iface.Pin, err error) ([]iface.Pin, error) {
+	if err != nil {
+		return nil, err
+	}
+
+	var result []iface.Pin
+
+	for pin := range pins {
+		if pin.Err() != nil {
+			return nil, pin.Err()
+		}
+		result = append(result, pin)
+	}
+
+	return result, nil
 }

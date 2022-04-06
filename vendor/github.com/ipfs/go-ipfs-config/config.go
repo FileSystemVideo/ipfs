@@ -27,11 +27,17 @@ type Config struct {
 	Swarm     SwarmConfig
 	AutoNAT   AutoNATConfig
 	Pubsub    PubsubConfig
+	Peering   Peering
+	DNS       DNS
+	Migration Migration
 
 	Provider     Provider
 	Reprovider   Reprovider
 	Experimental Experiments
 	Plugins      Plugins
+	Pinning      Pinning
+
+	Internal Internal // experimental/unstable options
 }
 
 const (

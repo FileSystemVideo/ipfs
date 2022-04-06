@@ -4,42 +4,59 @@ import (
 	"fmt"
 
 	"github.com/libp2p/go-libp2p"
-	host "github.com/libp2p/go-libp2p-core/host"
+	"github.com/libp2p/go-libp2p-core/host"
 	p2pbhost "github.com/libp2p/go-libp2p/p2p/host/basic"
-	mafilter "github.com/libp2p/go-maddr-filter"
 	ma "github.com/multiformats/go-multiaddr"
 	mamask "github.com/whyrusleeping/multiaddr-filter"
 )
 
-func AddrFilters(filters []string) func() (opts Libp2pOpts, err error) {
-	return func() (opts Libp2pOpts, err error) {
+func AddrFilters(filters []string) func() (*ma.Filters, Libp2pOpts, error) {
+	return func() (filter *ma.Filters, opts Libp2pOpts, err error) {
+		filter = ma.NewFilters()
+		opts.Opts = append(opts.Opts, libp2p.ConnectionGater((*filtersConnectionGater)(filter)))
 		for _, s := range filters {
 			f, err := mamask.NewMask(s)
 			if err != nil {
-				return opts, fmt.Errorf("incorrectly formatted address filter in config: %s", s)
+				return filter, opts, fmt.Errorf("incorrectly formatted address filter in config: %s", s)
 			}
-			opts.Opts = append(opts.Opts, libp2p.FilterAddresses(f))
+			filter.AddFilter(*f, ma.ActionDeny)
 		}
-		return opts, nil
+		return filter, opts, nil
 	}
 }
 
-func makeAddrsFactory(announce []string, noAnnounce []string) (p2pbhost.AddrsFactory, error) {
-	var annAddrs []ma.Multiaddr
-	for _, addr := range announce {
-		maddr, err := ma.NewMultiaddr(addr)
+func makeAddrsFactory(announce []string, appendAnnouce []string, noAnnounce []string) (p2pbhost.AddrsFactory, error) {
+	var err error                     // To assign to the slice in the for loop
+	existing := make(map[string]bool) // To avoid duplicates
+
+	annAddrs := make([]ma.Multiaddr, len(announce))
+	for i, addr := range announce {
+		annAddrs[i], err = ma.NewMultiaddr(addr)
 		if err != nil {
 			return nil, err
 		}
-		annAddrs = append(annAddrs, maddr)
+		existing[addr] = true
 	}
 
-	filters := mafilter.NewFilters()
+	var appendAnnAddrs []ma.Multiaddr
+	for _, addr := range appendAnnouce {
+		if existing[addr] {
+			// skip AppendAnnounce that is on the Announce list already
+			continue
+		}
+		appendAddr, err := ma.NewMultiaddr(addr)
+		if err != nil {
+			return nil, err
+		}
+		appendAnnAddrs = append(appendAnnAddrs, appendAddr)
+	}
+
+	filters := ma.NewFilters()
 	noAnnAddrs := map[string]bool{}
 	for _, addr := range noAnnounce {
 		f, err := mamask.NewMask(addr)
 		if err == nil {
-			filters.AddFilter(*f, mafilter.ActionDeny)
+			filters.AddFilter(*f, ma.ActionDeny)
 			continue
 		}
 		maddr, err := ma.NewMultiaddr(addr)
@@ -56,6 +73,7 @@ func makeAddrsFactory(announce []string, noAnnounce []string) (p2pbhost.AddrsFac
 		} else {
 			addrs = allAddrs
 		}
+		addrs = append(addrs, appendAnnAddrs...)
 
 		var out []ma.Multiaddr
 		for _, maddr := range addrs {
@@ -70,9 +88,9 @@ func makeAddrsFactory(announce []string, noAnnounce []string) (p2pbhost.AddrsFac
 	}, nil
 }
 
-func AddrsFactory(announce []string, noAnnounce []string) func() (opts Libp2pOpts, err error) {
+func AddrsFactory(announce []string, appendAnnouce []string, noAnnounce []string) func() (opts Libp2pOpts, err error) {
 	return func() (opts Libp2pOpts, err error) {
-		addrsFactory, err := makeAddrsFactory(announce, noAnnounce)
+		addrsFactory, err := makeAddrsFactory(announce, appendAnnouce, noAnnounce)
 		if err != nil {
 			return opts, err
 		}

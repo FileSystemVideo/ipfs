@@ -8,13 +8,13 @@ import (
 
 	"github.com/libp2p/go-libp2p-core/connmgr"
 	"github.com/libp2p/go-libp2p-core/event"
+	"github.com/libp2p/go-libp2p-core/introspection"
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/peerstore"
 	"github.com/libp2p/go-libp2p-core/protocol"
 
 	ma "github.com/multiformats/go-multiaddr"
-	"time"
 )
 
 // Host is an object participating in a p2p network, which
@@ -65,9 +65,6 @@ type Host interface {
 	// (Threadsafe)
 	NewStream(ctx context.Context, p peer.ID, pids ...protocol.ID) (network.Stream, error)
 
-	//向对方发送ping
-	Ping(pi peer.AddrInfo, timeout time.Duration) (error)
-
 	// Close shuts down the host, its Network, and services.
 	Close() error
 
@@ -76,7 +73,17 @@ type Host interface {
 
 	// EventBus returns the hosts eventbus
 	EventBus() event.Bus
+}
 
-	//返回当前主机的nat状态
-	GetNatStatus() network.Reachability
+// IntrospectableHost is implemented by Host implementations that are
+// introspectable, that is, that may have introspection capability.
+type IntrospectableHost interface {
+	// Introspector returns the introspector, or nil if one hasn't been
+	// registered. With it, the call can register data providers, and can fetch
+	// introspection data.
+	Introspector() introspection.Introspector
+
+	// IntrospectionEndpoint returns the introspection endpoint, or nil if one
+	// hasn't been registered.
+	IntrospectionEndpoint() introspection.Endpoint
 }

@@ -3,111 +3,137 @@ package asyncloader
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/ioutil"
+	"sync"
 
 	blocks "github.com/ipfs/go-block-format"
-	"github.com/ipfs/go-graphsync"
+	"github.com/ipld/go-ipld-prime"
+	peer "github.com/libp2p/go-libp2p-core/peer"
 
-	"github.com/ipfs/go-graphsync/ipldbridge"
+	"github.com/ipfs/go-graphsync"
 	"github.com/ipfs/go-graphsync/metadata"
 	"github.com/ipfs/go-graphsync/requestmanager/asyncloader/loadattemptqueue"
 	"github.com/ipfs/go-graphsync/requestmanager/asyncloader/responsecache"
 	"github.com/ipfs/go-graphsync/requestmanager/asyncloader/unverifiedblockstore"
 	"github.com/ipfs/go-graphsync/requestmanager/types"
-	"github.com/ipld/go-ipld-prime"
 )
 
-type loaderMessage interface {
-	handle(al *AsyncLoader)
+type alternateQueue struct {
+	responseCache    *responsecache.ResponseCache
+	loadAttemptQueue *loadattemptqueue.LoadAttemptQueue
 }
 
 // AsyncLoader manages loading links asynchronously in as new responses
 // come in from the network
 type AsyncLoader struct {
-	ctx              context.Context
-	cancel           context.CancelFunc
-	incomingMessages chan loaderMessage
-	outgoingMessages chan loaderMessage
+	ctx    context.Context
+	cancel context.CancelFunc
 
-	activeRequests   map[graphsync.RequestID]bool
-	loadAttemptQueue *loadattemptqueue.LoadAttemptQueue
+	// this mutex protects access to the state of the async loader, which covers all data fields below below
+	stateLk          sync.Mutex
+	activeRequests   map[graphsync.RequestID]struct{}
+	requestQueues    map[graphsync.RequestID]string
+	alternateQueues  map[string]alternateQueue
 	responseCache    *responsecache.ResponseCache
+	loadAttemptQueue *loadattemptqueue.LoadAttemptQueue
 }
 
 // New initializes a new link loading manager for asynchronous loads from the given context
 // and local store loading and storing function
-func New(ctx context.Context, loader ipld.Loader, storer ipld.Storer) *AsyncLoader {
-	unverifiedBlockStore := unverifiedblockstore.New(storer)
-	responseCache := responsecache.New(unverifiedBlockStore)
-	loadAttemptQueue := loadattemptqueue.New(func(requestID graphsync.RequestID, link ipld.Link) ([]byte, error) {
-		// load from response cache
-		data, err := responseCache.AttemptLoad(requestID, link)
-		if data == nil && err == nil {
-			// fall back to local store
-			stream, loadErr := loader(link, ipldbridge.LinkContext{})
-			if stream != nil && loadErr == nil {
-				localData, loadErr := ioutil.ReadAll(stream)
-				if loadErr == nil && localData != nil {
-					return localData, nil
-				}
-			}
-		}
-		return data, err
-	})
+func New(ctx context.Context, linkSystem ipld.LinkSystem) *AsyncLoader {
+	responseCache, loadAttemptQueue := setupAttemptQueue(linkSystem)
 	ctx, cancel := context.WithCancel(ctx)
 	return &AsyncLoader{
 		ctx:              ctx,
 		cancel:           cancel,
-		incomingMessages: make(chan loaderMessage),
-		outgoingMessages: make(chan loaderMessage),
-		activeRequests:   make(map[graphsync.RequestID]bool),
+		activeRequests:   make(map[graphsync.RequestID]struct{}),
+		requestQueues:    make(map[graphsync.RequestID]string),
+		alternateQueues:  make(map[string]alternateQueue),
 		responseCache:    responseCache,
 		loadAttemptQueue: loadAttemptQueue,
 	}
 }
 
-// Startup starts processing of messages
-func (al *AsyncLoader) Startup() {
-	go al.messageQueueWorker()
-	go al.run()
+// RegisterPersistenceOption registers a new loader/storer option for processing requests
+func (al *AsyncLoader) RegisterPersistenceOption(name string, lsys ipld.LinkSystem) error {
+	al.stateLk.Lock()
+	defer al.stateLk.Unlock()
+	_, existing := al.alternateQueues[name]
+	if existing {
+		return errors.New("already registerd a persistence option with this name")
+	}
+	responseCache, loadAttemptQueue := setupAttemptQueue(lsys)
+	al.alternateQueues[name] = alternateQueue{responseCache, loadAttemptQueue}
+	return nil
 }
 
-// Shutdown finishes processing of messages
-func (al *AsyncLoader) Shutdown() {
-	al.cancel()
+// UnregisterPersistenceOption unregisters an existing loader/storer option for processing requests
+func (al *AsyncLoader) UnregisterPersistenceOption(name string) error {
+	al.stateLk.Lock()
+	defer al.stateLk.Unlock()
+	_, ok := al.alternateQueues[name]
+	if !ok {
+		return fmt.Errorf("unknown persistence option: %s", name)
+	}
+	for _, requestQueue := range al.requestQueues {
+		if name == requestQueue {
+			return errors.New("cannot unregister while requests are in progress")
+		}
+	}
+	delete(al.alternateQueues, name)
+	return nil
 }
 
 // StartRequest indicates the given request has started and the manager should
 // continually attempt to load links for this request as new responses come in
-func (al *AsyncLoader) StartRequest(requestID graphsync.RequestID) {
-	select {
-	case <-al.ctx.Done():
-	case al.incomingMessages <- &startRequestMessage{requestID}:
+func (al *AsyncLoader) StartRequest(requestID graphsync.RequestID, persistenceOption string) error {
+	al.stateLk.Lock()
+	defer al.stateLk.Unlock()
+	if persistenceOption != "" {
+		_, ok := al.alternateQueues[persistenceOption]
+		if !ok {
+			return errors.New("unknown persistence option")
+		}
+		al.requestQueues[requestID] = persistenceOption
 	}
+	al.activeRequests[requestID] = struct{}{}
+	return nil
 }
 
 // ProcessResponse injests new responses and completes asynchronous loads as
 // neccesary
 func (al *AsyncLoader) ProcessResponse(responses map[graphsync.RequestID]metadata.Metadata,
 	blks []blocks.Block) {
-	al.responseCache.ProcessResponse(responses, blks)
-	select {
-	case <-al.ctx.Done():
-	case al.incomingMessages <- &newResponsesAvailableMessage{}:
+	al.stateLk.Lock()
+	defer al.stateLk.Unlock()
+	byQueue := make(map[string][]graphsync.RequestID)
+	for requestID := range responses {
+		queue := al.requestQueues[requestID]
+		byQueue[queue] = append(byQueue[queue], requestID)
+	}
+	for queue, requestIDs := range byQueue {
+		loadAttemptQueue := al.getLoadAttemptQueue(queue)
+		responseCache := al.getResponseCache(queue)
+		queueResponses := make(map[graphsync.RequestID]metadata.Metadata, len(requestIDs))
+		for _, requestID := range requestIDs {
+			queueResponses[requestID] = responses[requestID]
+		}
+		responseCache.ProcessResponse(queueResponses, blks)
+		loadAttemptQueue.RetryLoads()
 	}
 }
 
 // AsyncLoad asynchronously loads the given link for the given request ID. It returns a channel for data and a channel
 // for errors -- only one message will be sent over either.
-func (al *AsyncLoader) AsyncLoad(requestID graphsync.RequestID, link ipld.Link) <-chan types.AsyncLoadResult {
+func (al *AsyncLoader) AsyncLoad(p peer.ID, requestID graphsync.RequestID, link ipld.Link, linkContext ipld.LinkContext) <-chan types.AsyncLoadResult {
 	resultChan := make(chan types.AsyncLoadResult, 1)
-	lr := loadattemptqueue.NewLoadRequest(requestID, link, resultChan)
-	select {
-	case <-al.ctx.Done():
-		resultChan <- types.AsyncLoadResult{Data: nil, Err: errors.New("Context closed")}
-		close(resultChan)
-	case al.incomingMessages <- &loadRequestMessage{requestID, lr}:
-	}
+	lr := loadattemptqueue.NewLoadRequest(p, requestID, link, linkContext, resultChan)
+	al.stateLk.Lock()
+	defer al.stateLk.Unlock()
+	_, retry := al.activeRequests[requestID]
+	loadAttemptQueue := al.getLoadAttemptQueue(al.requestQueues[requestID])
+	loadAttemptQueue.AttemptLoad(lr, retry)
 	return resultChan
 }
 
@@ -115,86 +141,63 @@ func (al *AsyncLoader) AsyncLoad(requestID graphsync.RequestID, link ipld.Link) 
 // requestID, so if no responses are in the cache or local store, a link load
 // should not retry
 func (al *AsyncLoader) CompleteResponsesFor(requestID graphsync.RequestID) {
-	select {
-	case <-al.ctx.Done():
-	case al.incomingMessages <- &finishRequestMessage{requestID}:
-	}
+	al.stateLk.Lock()
+	defer al.stateLk.Unlock()
+	delete(al.activeRequests, requestID)
+	loadAttemptQueue := al.getLoadAttemptQueue(al.requestQueues[requestID])
+	loadAttemptQueue.ClearRequest(requestID)
 }
 
 // CleanupRequest indicates the given request is complete on the client side,
 // and no further attempts will be made to load links for this request,
 // so any cached response data is invalid can be cleaned
-func (al *AsyncLoader) CleanupRequest(requestID graphsync.RequestID) {
-	al.responseCache.FinishRequest(requestID)
-}
-
-type loadRequestMessage struct {
-	requestID   graphsync.RequestID
-	loadRequest loadattemptqueue.LoadRequest
-}
-
-type newResponsesAvailableMessage struct {
-}
-
-type startRequestMessage struct {
-	requestID graphsync.RequestID
-}
-
-type finishRequestMessage struct {
-	requestID graphsync.RequestID
-}
-
-func (al *AsyncLoader) run() {
-	for {
-		select {
-		case <-al.ctx.Done():
-			return
-		case message := <-al.outgoingMessages:
-			message.handle(al)
-		}
+func (al *AsyncLoader) CleanupRequest(p peer.ID, requestID graphsync.RequestID) {
+	al.stateLk.Lock()
+	defer al.stateLk.Unlock()
+	responseCache := al.responseCache
+	aq, ok := al.requestQueues[requestID]
+	if ok {
+		responseCache = al.alternateQueues[aq].responseCache
+		delete(al.requestQueues, requestID)
 	}
+	responseCache.FinishRequest(requestID)
 }
 
-func (al *AsyncLoader) messageQueueWorker() {
-	var messageBuffer []loaderMessage
-	nextMessage := func() loaderMessage {
-		if len(messageBuffer) == 0 {
-			return nil
-		}
-		return messageBuffer[0]
+func (al *AsyncLoader) getLoadAttemptQueue(queue string) *loadattemptqueue.LoadAttemptQueue {
+	if queue == "" {
+		return al.loadAttemptQueue
 	}
-	outgoingMessages := func() chan<- loaderMessage {
-		if len(messageBuffer) == 0 {
-			return nil
-		}
-		return al.outgoingMessages
+	return al.alternateQueues[queue].loadAttemptQueue
+}
+
+func (al *AsyncLoader) getResponseCache(queue string) *responsecache.ResponseCache {
+	if queue == "" {
+		return al.responseCache
 	}
-	for {
-		select {
-		case incomingMessage := <-al.incomingMessages:
-			messageBuffer = append(messageBuffer, incomingMessage)
-		case outgoingMessages() <- nextMessage():
-			messageBuffer = messageBuffer[1:]
-		case <-al.ctx.Done():
-			return
+	return al.alternateQueues[queue].responseCache
+}
+
+func setupAttemptQueue(lsys ipld.LinkSystem) (*responsecache.ResponseCache, *loadattemptqueue.LoadAttemptQueue) {
+
+	unverifiedBlockStore := unverifiedblockstore.New(lsys.StorageWriteOpener)
+	responseCache := responsecache.New(unverifiedBlockStore)
+	loadAttemptQueue := loadattemptqueue.New(func(p peer.ID, requestID graphsync.RequestID, link ipld.Link, linkContext ipld.LinkContext) types.AsyncLoadResult {
+		// load from response cache
+		data, err := responseCache.AttemptLoad(requestID, link, linkContext)
+		if err != nil {
+			return types.AsyncLoadResult{Err: err, Local: false}
 		}
-	}
-}
+		if data != nil {
+			return types.AsyncLoadResult{Data: data, Local: false}
+		}
+		// fall back to local store
+		if stream, err := lsys.StorageReadOpener(linkContext, link); stream != nil && err == nil {
+			if localData, err := ioutil.ReadAll(stream); err == nil && localData != nil {
+				return types.AsyncLoadResult{Data: localData, Local: true}
+			}
+		}
+		return types.AsyncLoadResult{Local: false}
+	})
 
-func (lrm *loadRequestMessage) handle(al *AsyncLoader) {
-	retry := al.activeRequests[lrm.requestID]
-	al.loadAttemptQueue.AttemptLoad(lrm.loadRequest, retry)
-}
-
-func (srm *startRequestMessage) handle(al *AsyncLoader) {
-	al.activeRequests[srm.requestID] = true
-}
-
-func (frm *finishRequestMessage) handle(al *AsyncLoader) {
-	delete(al.activeRequests, frm.requestID)
-	al.loadAttemptQueue.ClearRequest(frm.requestID)
-}
-
-func (nram *newResponsesAvailableMessage) handle(al *AsyncLoader) {
-	al.loadAttemptQueue.RetryLoads()
+	return responseCache, loadAttemptQueue
 }

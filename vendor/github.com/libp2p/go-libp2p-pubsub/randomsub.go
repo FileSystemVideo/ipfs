@@ -2,8 +2,7 @@ package pubsub
 
 import (
 	"context"
-
-	pb "github.com/libp2p/go-libp2p-pubsub/pb"
+	"math"
 
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/peer"
@@ -19,18 +18,21 @@ var (
 )
 
 // NewRandomSub returns a new PubSub object using RandomSubRouter as the router.
-func NewRandomSub(ctx context.Context, h host.Host, opts ...Option) (*PubSub, error) {
+func NewRandomSub(ctx context.Context, h host.Host, size int, opts ...Option) (*PubSub, error) {
 	rt := &RandomSubRouter{
+		size:  size,
 		peers: make(map[peer.ID]protocol.ID),
 	}
 	return NewPubSub(ctx, h, rt, opts...)
 }
 
 // RandomSubRouter is a router that implements a random propagation strategy.
-// For each message, it selects RandomSubD peers and forwards the message to them.
+// For each message, it selects the square root of the network size peers, with a min of RandomSubD,
+// and forwards the message to them.
 type RandomSubRouter struct {
 	p      *PubSub
 	peers  map[peer.ID]protocol.ID
+	size   int
 	tracer *pubsubTracer
 }
 
@@ -88,36 +90,49 @@ func (rs *RandomSubRouter) EnoughPeers(topic string, suggested int) bool {
 	return false
 }
 
+func (rs *RandomSubRouter) AcceptFrom(peer.ID) AcceptStatus {
+	return AcceptAll
+}
+
 func (rs *RandomSubRouter) HandleRPC(rpc *RPC) {}
 
-func (rs *RandomSubRouter) Publish(from peer.ID, msg *pb.Message) {
+func (rs *RandomSubRouter) Publish(msg *Message) {
+	from := msg.ReceivedFrom
+
 	tosend := make(map[peer.ID]struct{})
 	rspeers := make(map[peer.ID]struct{})
 	src := peer.ID(msg.GetFrom())
 
-	for _, topic := range msg.GetTopicIDs() {
-		tmap, ok := rs.p.topics[topic]
-		if !ok {
+	topic := msg.GetTopic()
+	tmap, ok := rs.p.topics[topic]
+	if !ok {
+		return
+	}
+
+	for p := range tmap {
+		if p == from || p == src {
 			continue
 		}
 
-		for p := range tmap {
-			if p == from || p == src {
-				continue
-			}
-
-			if rs.peers[p] == FloodSubID {
-				tosend[p] = struct{}{}
-			} else {
-				rspeers[p] = struct{}{}
-			}
+		if rs.peers[p] == FloodSubID {
+			tosend[p] = struct{}{}
+		} else {
+			rspeers[p] = struct{}{}
 		}
 	}
 
 	if len(rspeers) > RandomSubD {
+		target := RandomSubD
+		sqrt := int(math.Ceil(math.Sqrt(float64(rs.size))))
+		if sqrt > target {
+			target = sqrt
+		}
+		if target > len(rspeers) {
+			target = len(rspeers)
+		}
 		xpeers := peerMapToList(rspeers)
 		shufflePeers(xpeers)
-		xpeers = xpeers[:RandomSubD]
+		xpeers = xpeers[:target]
 		for _, p := range xpeers {
 			tosend[p] = struct{}{}
 		}
@@ -127,7 +142,7 @@ func (rs *RandomSubRouter) Publish(from peer.ID, msg *pb.Message) {
 		}
 	}
 
-	out := rpcWithMessages(msg)
+	out := rpcWithMessages(msg.Message)
 	for p := range tosend {
 		mch, ok := rs.p.peers[p]
 		if !ok {

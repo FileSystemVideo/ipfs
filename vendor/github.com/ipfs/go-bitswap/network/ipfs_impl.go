@@ -9,11 +9,10 @@ import (
 	"time"
 
 	bsmsg "github.com/ipfs/go-bitswap/message"
-	"github.com/ipfs/go-ipfs/cmd/wallet"
+
 	cid "github.com/ipfs/go-cid"
 	logging "github.com/ipfs/go-log"
 	"github.com/libp2p/go-libp2p-core/connmgr"
-	"github.com/libp2p/go-libp2p-core/helpers"
 	"github.com/libp2p/go-libp2p-core/host"
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
@@ -28,7 +27,12 @@ import (
 
 var log = logging.Logger("bitswap_network")
 
-var sendMessageTimeout = time.Minute * 10
+var connectTimeout = time.Second * 5
+
+var maxSendTimeout = 2 * time.Minute
+var minSendTimeout = 10 * time.Second
+var sendLatency = 2 * time.Second
+var minSendRate = (100 * 1000) / 8 // 100kbit/s
 
 // NewFromIpfsHost returns a BitSwapNetwork supported by underlying IPFS host.
 func NewFromIpfsHost(host host.Host, r routing.ContentRouting, opts ...NetOpt) BitSwapNetwork {
@@ -132,7 +136,7 @@ func (s *streamMessageSender) Reset() error {
 
 // Close the stream
 func (s *streamMessageSender) Close() error {
-	return helpers.FullClose(s.stream)
+	return s.stream.Close()
 }
 
 // Indicates whether the peer supports HAVE / DONT_HAVE messages
@@ -238,8 +242,6 @@ func (bsnet *impl) SupportsHave(proto protocol.ID) bool {
 }
 
 func (bsnet *impl) msgToStream(ctx context.Context, s network.Stream, msg bsmsg.BitSwapMessage, timeout time.Duration) error {
-	//定制
-	msg.SetWallet(wallet.Wallet)
 	deadline := time.Now().Add(timeout)
 	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
 		deadline = dl
@@ -266,6 +268,8 @@ func (bsnet *impl) msgToStream(ctx context.Context, s network.Stream, msg bsmsg.
 	default:
 		return fmt.Errorf("unrecognized protocol on remote: %s", s.Protocol())
 	}
+
+	atomic.AddUint64(&bsnet.stats.MessagesSent, 1)
 
 	if err := s.SetWriteDeadline(time.Time{}); err != nil {
 		log.Warnf("error resetting deadline: %s", err)
@@ -300,7 +304,7 @@ func setDefaultOpts(opts *MessageSenderOpts) *MessageSenderOpts {
 		copy.MaxRetries = 3
 	}
 	if opts.SendTimeout == 0 {
-		copy.SendTimeout = sendMessageTimeout
+		copy.SendTimeout = maxSendTimeout
 	}
 	if opts.SendErrorBackoff == 0 {
 		copy.SendErrorBackoff = 100 * time.Millisecond
@@ -308,25 +312,36 @@ func setDefaultOpts(opts *MessageSenderOpts) *MessageSenderOpts {
 	return &copy
 }
 
+func sendTimeout(size int) time.Duration {
+	timeout := sendLatency
+	timeout += time.Duration((uint64(time.Second) * uint64(size)) / uint64(minSendRate))
+	if timeout > maxSendTimeout {
+		timeout = maxSendTimeout
+	} else if timeout < minSendTimeout {
+		timeout = minSendTimeout
+	}
+	return timeout
+}
+
 func (bsnet *impl) SendMessage(
 	ctx context.Context,
 	p peer.ID,
 	outgoing bsmsg.BitSwapMessage) error {
 
-	s, err := bsnet.newStreamToPeer(ctx, p)
+	tctx, cancel := context.WithTimeout(ctx, connectTimeout)
+	defer cancel()
+
+	s, err := bsnet.newStreamToPeer(tctx, p)
 	if err != nil {
 		return err
 	}
 
-	if err = bsnet.msgToStream(ctx, s, outgoing, sendMessageTimeout); err != nil {
+	timeout := sendTimeout(outgoing.Size())
+	if err = bsnet.msgToStream(ctx, s, outgoing, timeout); err != nil {
 		_ = s.Reset()
 		return err
 	}
-	atomic.AddUint64(&bsnet.stats.MessagesSent, 1)
 
-	// TODO(https://github.com/libp2p/go-libp2p-net/issues/28): Avoid this goroutine.
-	//nolint
-	go helpers.AwaitEOF(s)
 	return s.Close()
 }
 
@@ -404,8 +419,8 @@ func (bsnet *impl) handleNewStream(s network.Stream) {
 		ctx := context.Background()
 		log.Debugf("bitswap net handleNewStream from %s", s.Conn().RemotePeer())
 		bsnet.connectEvtMgr.OnMessage(s.Conn().RemotePeer())
-		bsnet.receiver.ReceiveMessage(ctx, p, received)
 		atomic.AddUint64(&bsnet.stats.MessagesRecvd, 1)
+		bsnet.receiver.ReceiveMessage(ctx, p, received)
 	}
 }
 
@@ -427,9 +442,19 @@ func (nn *netNotifiee) impl() *impl {
 }
 
 func (nn *netNotifiee) Connected(n network.Network, v network.Conn) {
+	// ignore transient connections
+	if v.Stat().Transient {
+		return
+	}
+
 	nn.impl().connectEvtMgr.Connected(v.RemotePeer())
 }
 func (nn *netNotifiee) Disconnected(n network.Network, v network.Conn) {
+	// ignore transient connections
+	if v.Stat().Transient {
+		return
+	}
+
 	nn.impl().connectEvtMgr.Disconnected(v.RemotePeer())
 }
 func (nn *netNotifiee) OpenedStream(n network.Network, s network.Stream) {}

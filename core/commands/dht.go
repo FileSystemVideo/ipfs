@@ -18,7 +18,6 @@ import (
 	path "github.com/ipfs/go-path"
 	peer "github.com/libp2p/go-libp2p-core/peer"
 	routing "github.com/libp2p/go-libp2p-core/routing"
-	b58 "github.com/mr-tron/base58/base58"
 )
 
 var ErrNotDHT = errors.New("routing service is not a DHT")
@@ -46,6 +45,12 @@ const (
 	dhtVerboseOptionName = "verbose"
 )
 
+// kademlia extends the routing interface with a command to get the peers closest to the target
+type kademlia interface {
+	routing.Routing
+	GetClosestPeers(ctx context.Context, key string) ([]peer.ID, error)
+}
+
 var queryDhtCmd = &cmds.Command{
 	Helptext: cmds.HelpText{
 		Tagline:          "Find the closest Peer IDs to a given Peer ID by querying the DHT.",
@@ -64,7 +69,7 @@ var queryDhtCmd = &cmds.Command{
 			return err
 		}
 
-		if nd.DHT == nil {
+		if nd.DHTClient == nil {
 			return ErrNotDHT
 		}
 
@@ -74,40 +79,46 @@ var queryDhtCmd = &cmds.Command{
 		}
 
 		ctx, cancel := context.WithCancel(req.Context)
+		defer cancel()
 		ctx, events := routing.RegisterForQueryEvents(ctx)
 
-		dht := nd.DHT.WAN
-		if !nd.DHT.WANActive() {
-			dht = nd.DHT.LAN
+		client := nd.DHTClient
+		if client == nd.DHT {
+			client = nd.DHT.WAN
+			if !nd.DHT.WANActive() {
+				client = nd.DHT.LAN
+			}
 		}
 
-		errCh := make(chan error, 1)
-		go func() {
-			defer close(errCh)
-			defer cancel()
-			closestPeers, err := dht.GetClosestPeers(ctx, string(id))
-			if closestPeers != nil {
-				for p := range closestPeers {
+		if d, ok := client.(kademlia); !ok {
+			return fmt.Errorf("dht client does not support GetClosestPeers")
+		} else {
+			errCh := make(chan error, 1)
+			go func() {
+				defer close(errCh)
+				defer cancel()
+				closestPeers, err := d.GetClosestPeers(ctx, string(id))
+				for _, p := range closestPeers {
 					routing.PublishQueryEvent(ctx, &routing.QueryEvent{
 						ID:   p,
 						Type: routing.FinalPeer,
 					})
 				}
+
+				if err != nil {
+					errCh <- err
+					return
+				}
+			}()
+
+			for e := range events {
+				if err := res.Emit(e); err != nil {
+					return err
+				}
 			}
 
-			if err != nil {
-				errCh <- err
-				return
-			}
-		}()
-
-		for e := range events {
-			if err := res.Emit(e); err != nil {
-				return err
-			}
+			return <-errCh
 		}
-
-		return <-errCh
 	},
 	Encoders: cmds.EncoderMap{
 		cmds.Text: cmds.MakeTypedEncoder(func(req *cmds.Request, w io.Writer, out *routing.QueryEvent) error {
@@ -262,7 +273,7 @@ var provideRefDhtCmd = &cmds.Command{
 				return err
 			}
 
-			has, err := nd.Blockstore.Has(c)
+			has, err := nd.Blockstore.Has(req.Context, c)
 			if err != nil {
 				return err
 			}
@@ -676,20 +687,15 @@ func printEvent(obj *routing.QueryEvent, out io.Writer, verbose bool, override p
 
 func escapeDhtKey(s string) (string, error) {
 	parts := path.SplitList(s)
-	switch len(parts) {
-	case 1:
-		k, err := b58.Decode(s)
-		if err != nil {
-			return "", err
-		}
-		return string(k), nil
-	case 3:
-		k, err := b58.Decode(parts[2])
-		if err != nil {
-			return "", err
-		}
-		return path.Join(append(parts[:2], string(k))), nil
-	default:
+	if len(parts) != 3 ||
+		parts[0] != "" ||
+		!(parts[1] == "ipns" || parts[1] == "pk") {
 		return "", errors.New("invalid key")
 	}
+
+	k, err := peer.Decode(parts[2])
+	if err != nil {
+		return "", err
+	}
+	return path.Join(append(parts[:2], string(k))), nil
 }

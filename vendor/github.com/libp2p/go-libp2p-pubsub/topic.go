@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	pb "github.com/libp2p/go-libp2p-pubsub/pb"
 
@@ -24,6 +25,53 @@ type Topic struct {
 
 	mux    sync.RWMutex
 	closed bool
+}
+
+// String returns the topic associated with t
+func (t *Topic) String() string {
+	return t.topic
+}
+
+// SetScoreParams sets the topic score parameters if the pubsub router supports peer
+// scoring
+func (t *Topic) SetScoreParams(p *TopicScoreParams) error {
+	err := p.validate()
+	if err != nil {
+		return fmt.Errorf("invalid topic score parameters: %w", err)
+	}
+
+	t.mux.Lock()
+	defer t.mux.Unlock()
+
+	if t.closed {
+		return ErrTopicClosed
+	}
+
+	result := make(chan error, 1)
+	update := func() {
+		gs, ok := t.p.rt.(*GossipSubRouter)
+		if !ok {
+			result <- fmt.Errorf("pubsub router is not gossipsub")
+			return
+		}
+
+		if gs.score == nil {
+			result <- fmt.Errorf("peer scoring is not enabled in router")
+			return
+		}
+
+		err := gs.score.SetTopicScoreParams(t.topic, p)
+		result <- err
+	}
+
+	select {
+	case t.p.eval <- update:
+		err = <-result
+		return err
+
+	case <-t.p.ctx.Done():
+		return t.p.ctx.Err()
+	}
 }
 
 // EventHandler creates a handle for topic specific events
@@ -83,7 +131,7 @@ func (t *Topic) sendNotification(evt PeerEvent) {
 }
 
 // Subscribe returns a new Subscription for the topic.
-// Note that subscription is not an instanteneous operation. It may take some time
+// Note that subscription is not an instantaneous operation. It may take some time
 // before the subscription is processed by the pubsub main loop and propagated to our peers.
 func (t *Topic) Subscribe(opts ...SubOpt) (*Subscription, error) {
 	t.mux.RLock()
@@ -94,7 +142,6 @@ func (t *Topic) Subscribe(opts ...SubOpt) (*Subscription, error) {
 
 	sub := &Subscription{
 		topic: t.topic,
-		ch:    make(chan *Message, 32),
 		ctx:   t.p.ctx,
 	}
 
@@ -105,6 +152,11 @@ func (t *Topic) Subscribe(opts ...SubOpt) (*Subscription, error) {
 		}
 	}
 
+	if sub.ch == nil {
+		// apply the default size
+		sub.ch = make(chan *Message, 32)
+	}
+
 	out := make(chan *Subscription, 1)
 
 	t.p.disc.Discover(sub.topic)
@@ -113,6 +165,32 @@ func (t *Topic) Subscribe(opts ...SubOpt) (*Subscription, error) {
 	case t.p.addSub <- &addSubReq{
 		sub:  sub,
 		resp: out,
+	}:
+	case <-t.p.ctx.Done():
+		return nil, t.p.ctx.Err()
+	}
+
+	return <-out, nil
+}
+
+// Relay enables message relaying for the topic and returns a reference
+// cancel function. Subsequent calls increase the reference counter.
+// To completely disable the relay, all references must be cancelled.
+func (t *Topic) Relay() (RelayCancelFunc, error) {
+	t.mux.RLock()
+	defer t.mux.RUnlock()
+	if t.closed {
+		return nil, ErrTopicClosed
+	}
+
+	out := make(chan RelayCancelFunc, 1)
+
+	t.p.disc.Discover(t.topic)
+
+	select {
+	case t.p.addRelay <- &addRelayReq{
+		topic: t.topic,
+		resp:  out,
 	}:
 	case <-t.p.ctx.Done():
 		return nil, t.p.ctx.Err()
@@ -138,13 +216,15 @@ func (t *Topic) Publish(ctx context.Context, data []byte, opts ...PubOpt) error 
 		return ErrTopicClosed
 	}
 
-	seqno := t.p.nextSeqno()
-	id := t.p.host.ID()
 	m := &pb.Message{
-		Data:     data,
-		TopicIDs: []string{t.topic},
-		From:     []byte(id),
-		Seqno:    seqno,
+		Data:  data,
+		Topic: &t.topic,
+		From:  nil,
+		Seqno: nil,
+	}
+	if t.p.signID != "" {
+		m.From = []byte(t.p.signID)
+		m.Seqno = t.p.nextSeqno()
 	}
 	if t.p.signKey != nil {
 		m.From = []byte(t.p.signID)
@@ -163,16 +243,47 @@ func (t *Topic) Publish(ctx context.Context, data []byte, opts ...PubOpt) error 
 	}
 
 	if pub.ready != nil {
-		t.p.disc.Bootstrap(ctx, t.topic, pub.ready)
+		if t.p.disc.discovery != nil {
+			t.p.disc.Bootstrap(ctx, t.topic, pub.ready)
+		} else {
+			// TODO: we could likely do better than polling every 200ms.
+			// For example, block this goroutine on a channel,
+			// and check again whenever events tell us that the number of
+			// peers has increased.
+			var ticker *time.Ticker
+		readyLoop:
+			for {
+				// Check if ready for publishing.
+				// Similar to what disc.Bootstrap does.
+				res := make(chan bool, 1)
+				select {
+				case t.p.eval <- func() {
+					done, _ := pub.ready(t.p.rt, t.topic)
+					res <- done
+				}:
+					if <-res {
+						break readyLoop
+					}
+				case <-t.p.ctx.Done():
+					return t.p.ctx.Err()
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+				if ticker == nil {
+					ticker = time.NewTicker(200 * time.Millisecond)
+					defer ticker.Stop()
+				}
+
+				select {
+				case <-ticker.C:
+				case <-ctx.Done():
+					return fmt.Errorf("router is not ready: %w", ctx.Err())
+				}
+			}
+		}
 	}
 
-	select {
-	case t.p.publish <- &Message{m, id, nil}:
-	case <-t.p.ctx.Done():
-		return t.p.ctx.Err()
-	}
-
-	return nil
+	return t.p.val.PushLocal(&Message{m, t.p.host.ID(), nil})
 }
 
 // WithReadiness returns a publishing option for only publishing when the router is ready.

@@ -19,10 +19,11 @@ type config struct {
 	reachability      network.Reachability
 
 	// client
-	bootDelay       time.Duration
-	retryInterval   time.Duration
-	refreshInterval time.Duration
-	requestTimeout  time.Duration
+	bootDelay          time.Duration
+	retryInterval      time.Duration
+	refreshInterval    time.Duration
+	requestTimeout     time.Duration
+	throttlePeerPeriod time.Duration
 
 	// server
 	dialTimeout         time.Duration
@@ -38,6 +39,7 @@ var defaults = func(c *config) error {
 	c.retryInterval = 90 * time.Second
 	c.refreshInterval = 15 * time.Minute
 	c.requestTimeout = 30 * time.Second
+	c.throttlePeerPeriod = 90 * time.Second
 
 	c.dialTimeout = 15 * time.Second
 	c.maxPeerAddresses = 16
@@ -64,7 +66,8 @@ func EnableService(dialer network.Network) Option {
 	}
 }
 
-// WithReachability 重写autonat 以简单地报告覆盖的可达性状态。
+// WithReachability overrides autonat to simply report an over-ridden reachability
+// status.
 func WithReachability(reachability network.Reachability) Option {
 	return func(c *config) error {
 		c.forceReachability = true

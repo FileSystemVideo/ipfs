@@ -1,21 +1,20 @@
 package fsrepo
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 
 	filestore "github.com/ipfs/go-filestore"
-	keystore "github.com/ipfs/go-ipfs/keystore"
+	keystore "github.com/ipfs/go-ipfs-keystore"
 	repo "github.com/ipfs/go-ipfs/repo"
 	"github.com/ipfs/go-ipfs/repo/common"
-	mfsr "github.com/ipfs/go-ipfs/repo/fsrepo/migrations"
 	dir "github.com/ipfs/go-ipfs/thirdparty/dir"
 
 	ds "github.com/ipfs/go-datastore"
@@ -24,6 +23,7 @@ import (
 	config "github.com/ipfs/go-ipfs-config"
 	serialize "github.com/ipfs/go-ipfs-config/serialize"
 	util "github.com/ipfs/go-ipfs-util"
+	"github.com/ipfs/go-ipfs/repo/fsrepo/migrations"
 	logging "github.com/ipfs/go-log"
 	homedir "github.com/mitchellh/go-homedir"
 	ma "github.com/multiformats/go-multiaddr"
@@ -36,7 +36,7 @@ const LockFile = "repo.lock"
 var log = logging.Logger("fsrepo")
 
 // version number that we are currently expecting to see
-var RepoVersion = 9
+var RepoVersion = 11
 
 var migrationInstructions = `See https://github.com/ipfs/fs-repo-migrations/blob/master/run.md
 Sorry for the inconvenience. In the future, these will run automatically.`
@@ -143,7 +143,7 @@ func open(repoPath string) (repo.Repo, error) {
 	}()
 
 	// Check version, and error out if not matching
-	ver, err := mfsr.RepoPath(r.path).Version()
+	ver, err := migrations.RepoVersion(r.path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrNoVersion
@@ -292,7 +292,7 @@ func Init(repoPath string, conf *config.Config) error {
 		return err
 	}
 
-	if err := mfsr.RepoPath(repoPath).WriteVersion(RepoVersion); err != nil {
+	if err := migrations.WriteRepoVersion(repoPath, RepoVersion); err != nil {
 		return err
 	}
 
@@ -359,13 +359,30 @@ func (r *FSRepo) Path() string {
 
 // SetAPIAddr writes the API Addr to the /api file.
 func (r *FSRepo) SetAPIAddr(addr ma.Multiaddr) error {
-	f, err := os.Create(filepath.Join(r.path, apiFile))
+	// Create a temp file to write the address, so that we don't leave empty file when the
+	// program crashes after creating the file.
+	f, err := os.Create(filepath.Join(r.path, "."+apiFile+".tmp"))
 	if err != nil {
 		return err
 	}
-	defer f.Close()
 
-	_, err = f.WriteString(addr.String())
+	if _, err = f.WriteString(addr.String()); err != nil {
+		return err
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+
+	// Atomically rename the temp file to the correct file name.
+	if err = os.Rename(filepath.Join(r.path, "."+apiFile+".tmp"), filepath.Join(r.path,
+		apiFile)); err == nil {
+		return nil
+	}
+	// Remove the temp file when rename return error
+	if err1 := os.Remove(filepath.Join(r.path, "."+apiFile+".tmp")); err1 != nil {
+		return fmt.Errorf("File Rename error: %s, File remove error: %s", err.Error(),
+			err1.Error())
+	}
 	return err
 }
 
@@ -598,6 +615,7 @@ func (r *FSRepo) SetConfigKey(key string, value interface{}) error {
 	if err != nil {
 		return err
 	}
+	// Load into a map so we don't end up writing any additional defaults to the config file.
 	var mapconf map[string]interface{}
 	if err := serialize.ReadConfigFile(filename, &mapconf); err != nil {
 		return err
@@ -611,42 +629,7 @@ func (r *FSRepo) SetConfigKey(key string, value interface{}) error {
 		return err
 	}
 
-	// Get the type of the value associated with the key
-	oldValue, err := common.MapGetKV(mapconf, key)
-	ok := true
-	if err != nil {
-		// key-value does not exist yet
-		switch v := value.(type) {
-		case string:
-			value, err = strconv.ParseBool(v)
-			if err != nil {
-				value, err = strconv.Atoi(v)
-				if err != nil {
-					value, err = strconv.ParseFloat(v, 32)
-					if err != nil {
-						value = v
-					}
-				}
-			}
-		default:
-		}
-	} else {
-		switch oldValue.(type) {
-		case bool:
-			value, ok = value.(bool)
-		case int:
-			value, ok = value.(int)
-		case float32:
-			value, ok = value.(float32)
-		case string:
-			value, ok = value.(string)
-		default:
-		}
-		if !ok {
-			return fmt.Errorf("wrong config type, expected %T", oldValue)
-		}
-	}
-
+	// Set the key in the map.
 	if err := common.MapSetKV(mapconf, key, value); err != nil {
 		return err
 	}
@@ -678,8 +661,8 @@ func (r *FSRepo) Datastore() repo.Datastore {
 }
 
 // GetStorageUsage computes the storage space taken by the repo in bytes
-func (r *FSRepo) GetStorageUsage() (uint64, error) {
-	return ds.DiskUsage(r.Datastore())
+func (r *FSRepo) GetStorageUsage(ctx context.Context) (uint64, error) {
+	return ds.DiskUsage(ctx, r.Datastore())
 }
 
 func (r *FSRepo) SwarmKey() ([]byte, error) {

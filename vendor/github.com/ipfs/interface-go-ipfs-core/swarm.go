@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"time"
+
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
 	"github.com/libp2p/go-libp2p-core/protocol"
 
 	ma "github.com/multiformats/go-multiaddr"
-	ipath "github.com/ipfs/interface-go-ipfs-core/path"
 )
 
 var (
@@ -35,19 +35,6 @@ type ConnectionInfo interface {
 	Streams() ([]protocol.ID, error)
 }
 
-//分享带宽和硬盘相关api
-type ContributionApi interface{
-
-	//获取指定ipfs文件的贡献者信息
-	NameList(context.Context,ipath.Path) (map[string]int, error)
-
-	//设置分享带宽的收益钱包地址
-	SetWallet(string) error
-
-	//读取分享带宽的收益钱包地址
-	GetWallet() (string,error)
-}
-
 // SwarmAPI specifies the interface to libp2p swarm
 type SwarmAPI interface {
 	// Connect to a given peer
@@ -67,6 +54,4 @@ type SwarmAPI interface {
 
 	// ListenAddrs returns the list of all listening addresses
 	ListenAddrs(context.Context) ([]ma.Multiaddr, error)
-
-	Nat(context.Context) (network.Reachability, error)
 }

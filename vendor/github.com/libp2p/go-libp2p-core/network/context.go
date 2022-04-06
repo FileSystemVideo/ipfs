@@ -12,8 +12,55 @@ var DialPeerTimeout = 60 * time.Second
 
 type noDialCtxKey struct{}
 type dialPeerTimeoutCtxKey struct{}
+type forceDirectDialCtxKey struct{}
+type useTransientCtxKey struct{}
+type simConnectCtxKey struct{ isClient bool }
 
 var noDial = noDialCtxKey{}
+var forceDirectDial = forceDirectDialCtxKey{}
+var useTransient = useTransientCtxKey{}
+var simConnectIsServer = simConnectCtxKey{}
+var simConnectIsClient = simConnectCtxKey{isClient: true}
+
+// EXPERIMENTAL
+// WithForceDirectDial constructs a new context with an option that instructs the network
+// to attempt to force a direct connection to a peer via a dial even if a proxied connection to it already exists.
+func WithForceDirectDial(ctx context.Context, reason string) context.Context {
+	return context.WithValue(ctx, forceDirectDial, reason)
+}
+
+// EXPERIMENTAL
+// GetForceDirectDial returns true if the force direct dial option is set in the context.
+func GetForceDirectDial(ctx context.Context) (forceDirect bool, reason string) {
+	v := ctx.Value(forceDirectDial)
+	if v != nil {
+		return true, v.(string)
+	}
+
+	return false, ""
+}
+
+// WithSimultaneousConnect constructs a new context with an option that instructs the transport
+// to apply hole punching logic where applicable.
+// EXPERIMENTAL
+func WithSimultaneousConnect(ctx context.Context, isClient bool, reason string) context.Context {
+	if isClient {
+		return context.WithValue(ctx, simConnectIsClient, reason)
+	}
+	return context.WithValue(ctx, simConnectIsServer, reason)
+}
+
+// GetSimultaneousConnect returns true if the simultaneous connect option is set in the context.
+// EXPERIMENTAL
+func GetSimultaneousConnect(ctx context.Context) (simconnect bool, isClient bool, reason string) {
+	if v := ctx.Value(simConnectIsClient); v != nil {
+		return true, true, v.(string)
+	}
+	if v := ctx.Value(simConnectIsServer); v != nil {
+		return true, false, v.(string)
+	}
+	return false, false, ""
+}
 
 // WithNoDial constructs a new context with an option that instructs the network
 // to not attempt a new dial when opening a stream.
@@ -45,4 +92,19 @@ func GetDialPeerTimeout(ctx context.Context) time.Duration {
 // independently.
 func WithDialPeerTimeout(ctx context.Context, timeout time.Duration) context.Context {
 	return context.WithValue(ctx, dialPeerTimeoutCtxKey{}, timeout)
+}
+
+// WithUseTransient constructs a new context with an option that instructs the network
+// that it is acceptable to use a transient connection when opening a new stream.
+func WithUseTransient(ctx context.Context, reason string) context.Context {
+	return context.WithValue(ctx, useTransient, reason)
+}
+
+// GetUseTransient returns true if the use transient option is set in the context.
+func GetUseTransient(ctx context.Context) (usetransient bool, reason string) {
+	v := ctx.Value(useTransient)
+	if v != nil {
+		return true, v.(string)
+	}
+	return false, ""
 }

@@ -16,20 +16,23 @@ const (
 	P_QUIC              = 0x01CC
 	P_SCTP              = 0x0084
 	P_CIRCUIT           = 0x0122
-	P_THROUGH           = 0x0126
 	P_UDT               = 0x012D
 	P_UTP               = 0x012E
 	P_UNIX              = 0x0190
 	P_P2P               = 0x01A5
-	P_IPFS              = 0x01A5 // alias for backwards compatability
+	P_IPFS              = 0x01A5 // alias for backwards compatibility
 	P_HTTP              = 0x01E0
-	P_HTTPS             = 0x01BB
+	P_HTTPS             = 0x01BB // deprecated alias for /tls/http
 	P_ONION             = 0x01BC // also for backwards compatibility
 	P_ONION3            = 0x01BD
 	P_GARLIC64          = 0x01BE
 	P_GARLIC32          = 0x01BF
 	P_P2P_WEBRTC_DIRECT = 0x0114
+	P_TLS               = 0x01c0
+	P_NOISE             = 0x01c6
 	P_WS                = 0x01DD
+	P_WSS               = 0x01DE // deprecated alias for /tls/ws
+	P_PLAINTEXTV2       = 0x706c61
 )
 
 var (
@@ -117,13 +120,6 @@ var (
 		Transcoder: TranscoderPort,
 	}
 
-	protoThrough = Protocol{
-		Code:  P_THROUGH,
-		Size:  0,
-		Name:  "p2p-through",
-		VCode: CodeToVarint(P_THROUGH),
-	}
-
 	protoCIRCUIT = Protocol{
 		Code:  P_CIRCUIT,
 		Size:  0,
@@ -204,10 +200,30 @@ var (
 		Code:  P_P2P_WEBRTC_DIRECT,
 		VCode: CodeToVarint(P_P2P_WEBRTC_DIRECT),
 	}
+	protoTLS = Protocol{
+		Name:  "tls",
+		Code:  P_TLS,
+		VCode: CodeToVarint(P_TLS),
+	}
+	protoNOISE = Protocol{
+		Name:  "noise",
+		Code:  P_NOISE,
+		VCode: CodeToVarint(P_NOISE),
+	}
+	protoPlaintextV2 = Protocol{
+		Name:  "plaintextv2",
+		Code:  P_PLAINTEXTV2,
+		VCode: CodeToVarint(P_PLAINTEXTV2),
+	}
 	protoWS = Protocol{
 		Name:  "ws",
 		Code:  P_WS,
 		VCode: CodeToVarint(P_WS),
+	}
+	protoWSS = Protocol{
+		Name:  "wss",
+		Code:  P_WSS,
+		VCode: CodeToVarint(P_WSS),
 	}
 )
 
@@ -237,8 +253,11 @@ func init() {
 		protoP2P,
 		protoUNIX,
 		protoP2P_WEBRTC_DIRECT,
+		protoTLS,
+		protoNOISE,
 		protoWS,
-		protoThrough,
+		protoWSS,
+		protoPlaintextV2,
 	} {
 		if err := AddProtocol(p); err != nil {
 			panic(err)

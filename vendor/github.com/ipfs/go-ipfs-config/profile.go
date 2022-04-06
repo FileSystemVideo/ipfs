@@ -30,10 +30,6 @@ var defaultServerFilters = []string{
 	"/ip4/169.254.0.0/ipcidr/16",
 	"/ip4/172.16.0.0/ipcidr/12",
 	"/ip4/192.0.0.0/ipcidr/24",
-	"/ip4/192.0.0.0/ipcidr/29",
-	"/ip4/192.0.0.8/ipcidr/32",
-	"/ip4/192.0.0.170/ipcidr/32",
-	"/ip4/192.0.0.171/ipcidr/32",
 	"/ip4/192.0.2.0/ipcidr/24",
 	"/ip4/192.168.0.0/ipcidr/16",
 	"/ip4/198.18.0.0/ipcidr/15",
@@ -130,7 +126,7 @@ This profile may only be applied when first initializing the node.
 This is the most battle-tested and reliable datastore, but it's significantly
 slower than the badger datastore. You should use this datastore if:
 
-* You need a very simple and very reliable datastore you and trust your
+* You need a very simple and very reliable datastore and you trust your
   filesystem. This datastore stores each block as a separate file in the
   underlying filesystem so it's unlikely to loose data unless there's an issue
   with the underlying file system.

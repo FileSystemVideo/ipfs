@@ -4,15 +4,17 @@ package libp2p
 
 import (
 	"crypto/rand"
-	crypto "github.com/libp2p/go-libp2p-core/crypto"
+
+	"github.com/libp2p/go-libp2p-core/crypto"
 	mplex "github.com/libp2p/go-libp2p-mplex"
-	pstoremem "github.com/libp2p/go-libp2p-peerstore/pstoremem"
-	secio "github.com/libp2p/go-libp2p-secio"
+	noise "github.com/libp2p/go-libp2p-noise"
+	"github.com/libp2p/go-libp2p-peerstore/pstoremem"
+	quic "github.com/libp2p/go-libp2p-quic-transport"
 	tls "github.com/libp2p/go-libp2p-tls"
 	yamux "github.com/libp2p/go-libp2p-yamux"
-	tcp "github.com/libp2p/go-tcp-transport"
+	"github.com/libp2p/go-tcp-transport"
 	ws "github.com/libp2p/go-ws-transport"
-	multiaddr "github.com/multiformats/go-multiaddr"
+	"github.com/multiformats/go-multiaddr"
 )
 
 // DefaultSecurity is the default security option.
@@ -20,7 +22,7 @@ import (
 // Useful when you want to extend, but not replace, the supported transport
 // security protocols.
 var DefaultSecurity = ChainOptions(
-	Security(secio.ID, secio.New),
+	Security(noise.ID, noise.New),
 	Security(tls.ID, tls.New),
 )
 
@@ -39,12 +41,17 @@ var DefaultMuxers = ChainOptions(
 // libp2p instead of replacing them.
 var DefaultTransports = ChainOptions(
 	Transport(tcp.NewTCPTransport),
+	Transport(quic.NewTransport),
 	Transport(ws.New),
 )
 
 // DefaultPeerstore configures libp2p to use the default peerstore.
 var DefaultPeerstore Option = func(cfg *Config) error {
-	return cfg.Apply(Peerstore(pstoremem.NewPeerstore()))
+	ps, err := pstoremem.NewPeerstore()
+	if err != nil {
+		return err
+	}
+	return cfg.Apply(Peerstore(ps))
 }
 
 // RandomIdentity generates a random identity. (default behaviour)

@@ -1,3 +1,0 @@
-package wallet
-
-var Wallet = ""

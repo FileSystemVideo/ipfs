@@ -6,13 +6,17 @@ import (
 	"net"
 
 	ic "github.com/libp2p/go-libp2p-core/crypto"
+	n "github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
 	tpt "github.com/libp2p/go-libp2p-core/transport"
+
 	p2ptls "github.com/libp2p/go-libp2p-tls"
 
-	quic "github.com/lucas-clemente/quic-go"
+	"github.com/lucas-clemente/quic-go"
 	ma "github.com/multiformats/go-multiaddr"
 )
+
+var quicListen = quic.Listen // so we can mock it in tests
 
 // A listener listens for QUIC connections.
 type listener struct {
@@ -33,10 +37,10 @@ func newListener(rconn *reuseConn, t *transport, localPeer peer.ID, key ic.PrivK
 		// Note that since we have no way of associating an incoming QUIC connection with
 		// the peer ID calculated here, we don't actually receive the peer's public key
 		// from the key chan.
-		conf, _ := identity.ConfigForAny()
+		conf, _ := identity.ConfigForPeer("")
 		return conf, nil
 	}
-	ln, err := quic.Listen(rconn, &tlsConf, t.serverConfig)
+	ln, err := quicListen(rconn, &tlsConf, t.serverConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -66,27 +70,49 @@ func (l *listener) Accept() (tpt.CapableConn, error) {
 			sess.CloseWithError(0, err.Error())
 			continue
 		}
+		if l.transport.gater != nil && !(l.transport.gater.InterceptAccept(conn) && l.transport.gater.InterceptSecured(n.DirInbound, conn.remotePeerID, conn)) {
+			sess.CloseWithError(errorCodeConnectionGating, "connection gated")
+			continue
+		}
+
+		// return through active hole punching if any
+		key := holePunchKey{addr: sess.RemoteAddr().String(), peer: conn.remotePeerID}
+		var wasHolePunch bool
+		l.transport.holePunchingMx.Lock()
+		holePunch, ok := l.transport.holePunching[key]
+		if ok && !holePunch.fulfilled {
+			holePunch.connCh <- conn
+			wasHolePunch = true
+			holePunch.fulfilled = true
+		}
+		l.transport.holePunchingMx.Unlock()
+		if wasHolePunch {
+			continue
+		}
 		return conn, nil
 	}
 }
 
-func (l *listener) setupConn(sess quic.Session) (tpt.CapableConn, error) {
+func (l *listener) setupConn(sess quic.Session) (*conn, error) {
 	// The tls.Config used to establish this connection already verified the certificate chain.
 	// Since we don't have any way of knowing which tls.Config was used though,
 	// we have to re-determine the peer's identity here.
 	// Therefore, this is expected to never fail.
-	remotePubKey, err := p2ptls.PubKeyFromCertChain(sess.ConnectionState().PeerCertificates)
+	remotePubKey, err := p2ptls.PubKeyFromCertChain(sess.ConnectionState().TLS.PeerCertificates)
 	if err != nil {
 		return nil, err
 	}
+
 	remotePeerID, err := peer.IDFromPublicKey(remotePubKey)
 	if err != nil {
 		return nil, err
 	}
+
 	remoteMultiaddr, err := toQuicMultiaddr(sess.RemoteAddr())
 	if err != nil {
 		return nil, err
 	}
+
 	return &conn{
 		sess:            sess,
 		transport:       l.transport,

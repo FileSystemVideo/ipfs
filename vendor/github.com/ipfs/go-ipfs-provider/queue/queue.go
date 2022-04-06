@@ -14,11 +14,11 @@ import (
 
 var log = logging.Logger("provider.queue")
 
-// Queue provides a durable, FIFO interface to the datastore for storing cids
+// Queue provides a best-effort durability, FIFO interface to the datastore for storing cids
 //
-// Durability just means that cids in the process of being provided when a
-// crash or shutdown occurs will still be in the queue when the node is
-// brought back online.
+// Best-effort durability just means that cids in the process of being provided when a
+// crash or shutdown occurs may be in the queue when the node is brought back online
+// depending on whether the underlying datastore has synchronous or asynchronous writes.
 type Queue struct {
 	// used to differentiate queues in datastore
 	// e.g. provider vs reprovider
@@ -96,8 +96,8 @@ func (q *Queue) work() {
 					k = datastore.NewKey(head.Key)
 					c, err = cid.Parse(head.Value)
 					if err != nil {
-						log.Warningf("error parsing queue entry cid with key (%s), removing it from queue: %s", head.Key, err)
-						err = q.ds.Delete(k)
+						log.Warnf("error parsing queue entry cid with key (%s), removing it from queue: %s", head.Key, err)
+						err = q.ds.Delete(q.ctx, k)
 						if err != nil {
 							log.Errorf("error deleting queue entry with key (%s), due to error (%s), stopping provider", head.Key, err)
 							return
@@ -120,12 +120,12 @@ func (q *Queue) work() {
 				keyPath := fmt.Sprintf("%d/%s", time.Now().UnixNano(), c.String())
 				nextKey := datastore.NewKey(keyPath)
 
-				if err := q.ds.Put(nextKey, toQueue.Bytes()); err != nil {
+				if err := q.ds.Put(q.ctx, nextKey, toQueue.Bytes()); err != nil {
 					log.Errorf("Failed to enqueue cid: %s", err)
 					continue
 				}
 			case dequeue <- c:
-				err := q.ds.Delete(k)
+				err := q.ds.Delete(q.ctx, k)
 
 				if err != nil {
 					log.Errorf("Failed to delete queued cid %s with key %s: %s", c, k, err)
@@ -141,7 +141,7 @@ func (q *Queue) work() {
 
 func (q *Queue) getQueueHead() (*query.Entry, error) {
 	qry := query.Query{Orders: []query.Order{query.OrderByKey{}}, Limit: 1}
-	results, err := q.ds.Query(qry)
+	results, err := q.ds.Query(q.ctx, qry)
 	if err != nil {
 		return nil, err
 	}

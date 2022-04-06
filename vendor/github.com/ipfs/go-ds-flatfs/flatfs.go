@@ -4,6 +4,7 @@
 package flatfs
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -96,6 +97,9 @@ func combineAccuracy(a, b initAccuracy) initAccuracy {
 }
 
 var _ datastore.Datastore = (*Datastore)(nil)
+var _ datastore.PersistentDatastore = (*Datastore)(nil)
+var _ datastore.Batching = (*Datastore)(nil)
+var _ datastore.Batch = (*flatfsBatch)(nil)
 
 var (
 	ErrDatastoreExists       = errors.New("datastore already exists")
@@ -369,7 +373,7 @@ func (fs *Datastore) renameAndUpdateDiskUsage(tmpPath, path string) error {
 	// it will either a) Re-add the size of an existing file, which
 	// was sustracted before b) Add 0 if there is no existing file.
 	for i := 0; i < RetryAttempts; i++ {
-		err = os.Rename(tmpPath, path)
+		err = rename(tmpPath, path)
 		// if there's no error, or the source file doesn't exist, abort.
 		if err == nil || os.IsNotExist(err) {
 			break
@@ -393,7 +397,7 @@ func (fs *Datastore) renameAndUpdateDiskUsage(tmpPath, path string) error {
 // one arrived slightly later than the other. In the case of a
 // concurrent Put and a Delete operation, we cannot guarantee which one
 // will win.
-func (fs *Datastore) Put(key datastore.Key, value []byte) error {
+func (fs *Datastore) Put(ctx context.Context, key datastore.Key, value []byte) error {
 	if !keyIsValid(key) {
 		return fmt.Errorf("when putting '%q': %v", key, ErrInvalidKey)
 	}
@@ -412,7 +416,7 @@ func (fs *Datastore) Put(key datastore.Key, value []byte) error {
 	return err
 }
 
-func (fs *Datastore) Sync(prefix datastore.Key) error {
+func (fs *Datastore) Sync(ctx context.Context, prefix datastore.Key) error {
 	fs.shutdownLock.RLock()
 	defer fs.shutdownLock.RUnlock()
 	if fs.shutdown {
@@ -644,7 +648,7 @@ func (fs *Datastore) putMany(data map[datastore.Key][]byte) error {
 	return nil
 }
 
-func (fs *Datastore) Get(key datastore.Key) (value []byte, err error) {
+func (fs *Datastore) Get(ctx context.Context, key datastore.Key) (value []byte, err error) {
 	// Can't exist in datastore.
 	if !keyIsValid(key) {
 		return nil, datastore.ErrNotFound
@@ -662,7 +666,7 @@ func (fs *Datastore) Get(key datastore.Key) (value []byte, err error) {
 	return data, nil
 }
 
-func (fs *Datastore) Has(key datastore.Key) (exists bool, err error) {
+func (fs *Datastore) Has(ctx context.Context, key datastore.Key) (exists bool, err error) {
 	// Can't exist in datastore.
 	if !keyIsValid(key) {
 		return false, nil
@@ -679,7 +683,7 @@ func (fs *Datastore) Has(key datastore.Key) (exists bool, err error) {
 	}
 }
 
-func (fs *Datastore) GetSize(key datastore.Key) (size int, err error) {
+func (fs *Datastore) GetSize(ctx context.Context, key datastore.Key) (size int, err error) {
 	// Can't exist in datastore.
 	if !keyIsValid(key) {
 		return -1, datastore.ErrNotFound
@@ -699,7 +703,7 @@ func (fs *Datastore) GetSize(key datastore.Key) (size int, err error) {
 // Delete removes a key/value from the Datastore. Please read
 // the Put() explanation about the handling of concurrent write
 // operations to the same key.
-func (fs *Datastore) Delete(key datastore.Key) error {
+func (fs *Datastore) Delete(ctx context.Context, key datastore.Key) error {
 	// Can't exist in datastore.
 	if !keyIsValid(key) {
 		return nil
@@ -744,7 +748,7 @@ func (fs *Datastore) doDelete(key datastore.Key) error {
 	return err
 }
 
-func (fs *Datastore) Query(q query.Query) (query.Results, error) {
+func (fs *Datastore) Query(ctx context.Context, q query.Query) (query.Results, error) {
 	prefix := datastore.NewKey(q.Prefix).String()
 	if prefix != "/" {
 		// This datastore can't include keys with multiple components.
@@ -1060,7 +1064,7 @@ func (fs *Datastore) writeDiskUsageFile(du int64, doSync bool) {
 	}
 	closed = true
 
-	if err := os.Rename(tmp.Name(), filepath.Join(fs.path, DiskUsageFile)); err != nil {
+	if err := rename(tmp.Name(), filepath.Join(fs.path, DiskUsageFile)); err != nil {
 		log.Warnw("cound not write disk usage", "error", err)
 		return
 	}
@@ -1090,7 +1094,7 @@ func (fs *Datastore) readDiskUsageFile() int64 {
 //
 // The size is approximative and may slightly differ from
 // the real disk values.
-func (fs *Datastore) DiskUsage() (uint64, error) {
+func (fs *Datastore) DiskUsage(ctx context.Context) (uint64, error) {
 	// it may differ from real disk values if
 	// the filesystem has allocated for blocks
 	// for a directory because it has many files in it
@@ -1203,7 +1207,7 @@ type flatfsBatch struct {
 	ds *Datastore
 }
 
-func (fs *Datastore) Batch() (datastore.Batch, error) {
+func (fs *Datastore) Batch(_ context.Context) (datastore.Batch, error) {
 	return &flatfsBatch{
 		puts:    make(map[datastore.Key][]byte),
 		deletes: make(map[datastore.Key]struct{}),
@@ -1211,7 +1215,7 @@ func (fs *Datastore) Batch() (datastore.Batch, error) {
 	}, nil
 }
 
-func (bt *flatfsBatch) Put(key datastore.Key, val []byte) error {
+func (bt *flatfsBatch) Put(ctx context.Context, key datastore.Key, val []byte) error {
 	if !keyIsValid(key) {
 		return fmt.Errorf("when putting '%q': %v", key, ErrInvalidKey)
 	}
@@ -1219,20 +1223,20 @@ func (bt *flatfsBatch) Put(key datastore.Key, val []byte) error {
 	return nil
 }
 
-func (bt *flatfsBatch) Delete(key datastore.Key) error {
+func (bt *flatfsBatch) Delete(ctx context.Context, key datastore.Key) error {
 	if keyIsValid(key) {
 		bt.deletes[key] = struct{}{}
 	} // otherwise, delete is a no-op anyways.
 	return nil
 }
 
-func (bt *flatfsBatch) Commit() error {
+func (bt *flatfsBatch) Commit(ctx context.Context) error {
 	if err := bt.ds.putMany(bt.puts); err != nil {
 		return err
 	}
 
 	for k := range bt.deletes {
-		if err := bt.ds.Delete(k); err != nil {
+		if err := bt.ds.Delete(ctx, k); err != nil {
 			return err
 		}
 	}

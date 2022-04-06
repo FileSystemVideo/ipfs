@@ -1,11 +1,35 @@
 package quic
 
-import "github.com/lucas-clemente/quic-go/internal/protocol"
+import (
+	"errors"
+	"time"
+
+	"github.com/lucas-clemente/quic-go/internal/utils"
+
+	"github.com/lucas-clemente/quic-go/internal/protocol"
+)
 
 // Clone clones a Config
 func (c *Config) Clone() *Config {
 	copy := *c
 	return &copy
+}
+
+func (c *Config) handshakeTimeout() time.Duration {
+	return utils.MaxDuration(protocol.DefaultHandshakeTimeout, 2*c.HandshakeIdleTimeout)
+}
+
+func validateConfig(config *Config) error {
+	if config == nil {
+		return nil
+	}
+	if config.MaxIncomingStreams > 1<<60 {
+		return errors.New("invalid value for Config.MaxIncomingStreams")
+	}
+	if config.MaxIncomingUniStreams > 1<<60 {
+		return errors.New("invalid value for Config.MaxIncomingUniStreams")
+	}
+	return nil
 }
 
 // populateServerConfig populates fields in the quic.Config with their default values, if none are set
@@ -39,21 +63,29 @@ func populateConfig(config *Config) *Config {
 	if len(versions) == 0 {
 		versions = protocol.SupportedVersions
 	}
-	handshakeTimeout := protocol.DefaultHandshakeTimeout
-	if config.HandshakeTimeout != 0 {
-		handshakeTimeout = config.HandshakeTimeout
+	handshakeIdleTimeout := protocol.DefaultHandshakeIdleTimeout
+	if config.HandshakeIdleTimeout != 0 {
+		handshakeIdleTimeout = config.HandshakeIdleTimeout
 	}
 	idleTimeout := protocol.DefaultIdleTimeout
 	if config.MaxIdleTimeout != 0 {
 		idleTimeout = config.MaxIdleTimeout
 	}
-	maxReceiveStreamFlowControlWindow := config.MaxReceiveStreamFlowControlWindow
-	if maxReceiveStreamFlowControlWindow == 0 {
-		maxReceiveStreamFlowControlWindow = protocol.DefaultMaxReceiveStreamFlowControlWindow
+	initialStreamReceiveWindow := config.InitialStreamReceiveWindow
+	if initialStreamReceiveWindow == 0 {
+		initialStreamReceiveWindow = protocol.DefaultInitialMaxStreamData
 	}
-	maxReceiveConnectionFlowControlWindow := config.MaxReceiveConnectionFlowControlWindow
-	if maxReceiveConnectionFlowControlWindow == 0 {
-		maxReceiveConnectionFlowControlWindow = protocol.DefaultMaxReceiveConnectionFlowControlWindow
+	maxStreamReceiveWindow := config.MaxStreamReceiveWindow
+	if maxStreamReceiveWindow == 0 {
+		maxStreamReceiveWindow = protocol.DefaultMaxReceiveStreamFlowControlWindow
+	}
+	initialConnectionReceiveWindow := config.InitialConnectionReceiveWindow
+	if initialConnectionReceiveWindow == 0 {
+		initialConnectionReceiveWindow = protocol.DefaultInitialMaxData
+	}
+	maxConnectionReceiveWindow := config.MaxConnectionReceiveWindow
+	if maxConnectionReceiveWindow == 0 {
+		maxConnectionReceiveWindow = protocol.DefaultMaxReceiveConnectionFlowControlWindow
 	}
 	maxIncomingStreams := config.MaxIncomingStreams
 	if maxIncomingStreams == 0 {
@@ -69,19 +101,23 @@ func populateConfig(config *Config) *Config {
 	}
 
 	return &Config{
-		Versions:                              versions,
-		HandshakeTimeout:                      handshakeTimeout,
-		MaxIdleTimeout:                        idleTimeout,
-		AcceptToken:                           config.AcceptToken,
-		KeepAlive:                             config.KeepAlive,
-		MaxReceiveStreamFlowControlWindow:     maxReceiveStreamFlowControlWindow,
-		MaxReceiveConnectionFlowControlWindow: maxReceiveConnectionFlowControlWindow,
-		MaxIncomingStreams:                    maxIncomingStreams,
-		MaxIncomingUniStreams:                 maxIncomingUniStreams,
-		ConnectionIDLength:                    config.ConnectionIDLength,
-		StatelessResetKey:                     config.StatelessResetKey,
-		TokenStore:                            config.TokenStore,
-		QuicTracer:                            config.QuicTracer,
-		GetLogWriter:                          config.GetLogWriter,
+		Versions:                         versions,
+		HandshakeIdleTimeout:             handshakeIdleTimeout,
+		MaxIdleTimeout:                   idleTimeout,
+		AcceptToken:                      config.AcceptToken,
+		KeepAlive:                        config.KeepAlive,
+		InitialStreamReceiveWindow:       initialStreamReceiveWindow,
+		MaxStreamReceiveWindow:           maxStreamReceiveWindow,
+		InitialConnectionReceiveWindow:   initialConnectionReceiveWindow,
+		MaxConnectionReceiveWindow:       maxConnectionReceiveWindow,
+		MaxIncomingStreams:               maxIncomingStreams,
+		MaxIncomingUniStreams:            maxIncomingUniStreams,
+		ConnectionIDLength:               config.ConnectionIDLength,
+		StatelessResetKey:                config.StatelessResetKey,
+		TokenStore:                       config.TokenStore,
+		EnableDatagrams:                  config.EnableDatagrams,
+		DisablePathMTUDiscovery:          config.DisablePathMTUDiscovery,
+		DisableVersionNegotiationPackets: config.DisableVersionNegotiationPackets,
+		Tracer:                           config.Tracer,
 	}
 }

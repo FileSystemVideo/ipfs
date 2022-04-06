@@ -17,11 +17,12 @@ import (
 var log = logging.Logger("cmds/http")
 
 var (
-	ErrNotFound           = errors.New("404 page not found")
-	errApiVersionMismatch = errors.New("api version mismatch")
+	// ErrNotFound is returned when the endpoint does not exist.
+	ErrNotFound = errors.New("404 page not found")
 )
 
 const (
+	// StreamErrHeader is used as trailer when stream errors happen.
 	StreamErrHeader          = "X-Stream-Error"
 	streamHeader             = "X-Stream-Output"
 	channelHeader            = "X-Chunked-Output"
@@ -32,7 +33,7 @@ const (
 	transferEncodingHeader   = "Transfer-Encoding"
 	originHeader             = "origin"
 
-	applicationJson        = "application/json"
+	applicationJSON        = "application/json"
 	applicationOctetStream = "application/octet-stream"
 	plainText              = "text/plain"
 )
@@ -57,6 +58,7 @@ type handler struct {
 	env  cmds.Environment
 }
 
+// NewHandler creates the http.Handler for the given commands.
 func NewHandler(env cmds.Environment, root *cmds.Command, cfg *ServerConfig) http.Handler {
 	if cfg == nil {
 		panic("must provide a valid ServerConfig")
@@ -105,7 +107,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// The CORS library handles all other requests.
 
 		// Tell the user the allowed methods, and return.
-		setAllowedHeaders(w, h.cfg.AllowGet)
+		setAllowHeader(w, h.cfg.AllowGet)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	case http.MethodPost:
@@ -115,7 +117,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		fallthrough
 	default:
-		setAllowedHeaders(w, h.cfg.AllowGet)
+		setAllowHeader(w, h.cfg.AllowGet)
 		http.Error(w, "405 - Method Not Allowed", http.StatusMethodNotAllowed)
 		log.Warnf("The IPFS API does not support %s requests.", r.Method)
 		return
@@ -190,18 +192,10 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.root.Call(req, re, h.env)
 }
 
-func sanitizedErrStr(err error) string {
-	s := err.Error()
-	s = strings.Split(s, "\n")[0]
-	s = strings.Split(s, "\r")[0]
-	return s
-}
-
-func setAllowedHeaders(w http.ResponseWriter, allowGet bool) {
-	w.Header().Add("Allow", http.MethodHead)
-	w.Header().Add("Allow", http.MethodOptions)
-	w.Header().Add("Allow", http.MethodPost)
+func setAllowHeader(w http.ResponseWriter, allowGet bool) {
+	allowedMethods := []string{http.MethodOptions, http.MethodPost}
 	if allowGet {
-		w.Header().Add("Allow", http.MethodGet)
+		allowedMethods = append(allowedMethods, http.MethodHead, http.MethodGet)
 	}
+	w.Header().Set("Allow", strings.Join(allowedMethods, ", "))
 }

@@ -1,12 +1,10 @@
 # go-ipfs environment variables
 
-## `LIBP2P_TCP_REUSEPORT` (`IPFS_REUSEPORT`)
+## `LIBP2P_TCP_REUSEPORT`
 
 go-ipfs tries to reuse the same source port for all connections to improve NAT
 traversal. If this is an issue, you can disable it by setting
 `LIBP2P_TCP_REUSEPORT` to false.
-
-This variable was previously `IPFS_REUSEPORT`.
 
 Default: true
 
@@ -77,10 +75,11 @@ Defaults: 2048
 
 ## `IPFS_DIST_PATH`
 
-URL from which go-ipfs fetches repo migrations (when the daemon is launched with
-the `--migrate` flag).
+IPFS Content Path from which go-ipfs fetches repo migrations (when the daemon
+is launched with the `--migrate` flag).
 
-Default: https://ipfs.io/ipfs/$something (depends on the IPFS version)
+Default: `/ipfs/<cid>` (the exact path is hardcoded in
+`migrations.CurrentIpfsDist`, depends on the IPFS version)
 
 ## `IPFS_NS_MAP`
 
@@ -97,6 +96,8 @@ $ ipfs resolve -r /ipns/dnslink-test2.example.com
 ```
 
 ## `LIBP2P_MUX_PREFS`
+
+Deprecated: Use the `Swarm.Transports.Multiplexers` config field.
 
 Tells go-ipfs which multiplexers to use in which order.
 

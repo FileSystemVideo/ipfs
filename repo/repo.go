@@ -1,11 +1,12 @@
 package repo
 
 import (
+	"context"
 	"errors"
 	"io"
 
 	filestore "github.com/ipfs/go-filestore"
-	keystore "github.com/ipfs/go-ipfs/keystore"
+	keystore "github.com/ipfs/go-ipfs-keystore"
 
 	ds "github.com/ipfs/go-datastore"
 	config "github.com/ipfs/go-ipfs-config"
@@ -39,7 +40,7 @@ type Repo interface {
 	Datastore() Datastore
 
 	// GetStorageUsage returns the number of bytes stored.
-	GetStorageUsage() (uint64, error)
+	GetStorageUsage(context.Context) (uint64, error)
 
 	// Keystore returns a reference to the key management interface.
 	Keystore() keystore.Keystore

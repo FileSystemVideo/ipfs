@@ -2,21 +2,28 @@ package mocknet
 
 import (
 	"container/list"
+	"context"
+	"strconv"
 	"sync"
+	"sync/atomic"
 
 	process "github.com/jbenet/goprocess"
 	ic "github.com/libp2p/go-libp2p-core/crypto"
 	"github.com/libp2p/go-libp2p-core/network"
 	"github.com/libp2p/go-libp2p-core/peer"
 	ma "github.com/multiformats/go-multiaddr"
-	manet "github.com/multiformats/go-multiaddr-net"
+	manet "github.com/multiformats/go-multiaddr/net"
 )
+
+var connCounter int64
 
 // conn represents one side's perspective of a
 // live connection between two peers.
 // it goes over a particular link.
 type conn struct {
 	notifLk sync.Mutex
+
+	id int64
 
 	local  peer.ID
 	remote peer.ID
@@ -43,6 +50,7 @@ func newConn(p process.Process, ln, rn *peernet, l *link, dir network.Direction)
 	c.local = ln.peer
 	c.remote = rn.peer
 	c.stat = network.Stat{Direction: dir}
+	c.id = atomic.AddInt64(&connCounter, 1)
 
 	c.localAddr = ln.ps.Addrs(ln.peer)[0]
 	for _, a := range rn.ps.Addrs(rn.peer) {
@@ -59,6 +67,10 @@ func newConn(p process.Process, ln, rn *peernet, l *link, dir network.Direction)
 	c.remotePubKey = rn.ps.PubKey(rn.peer)
 	c.connProc = process.WithParent(c.pairProc)
 	return c
+}
+
+func (c *conn) ID() string {
+	return strconv.FormatInt(c.id, 10)
 }
 
 func (c *conn) Close() error {
@@ -140,7 +152,7 @@ func (c *conn) openStream() *stream {
 	return sl
 }
 
-func (c *conn) NewStream() (network.Stream, error) {
+func (c *conn) NewStream(context.Context) (network.Stream, error) {
 	log.Debugf("Conn.NewStreamWithProtocol: %s --> %s", c.local, c.remote)
 
 	s := c.openStream()

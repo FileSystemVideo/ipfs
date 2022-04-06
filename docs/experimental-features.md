@@ -13,23 +13,20 @@ feature, you MUST please make a PR updating this document, and link the PR in
 the above issue.
 
 - [ipfs pubsub](#ipfs-pubsub)
-- [Client mode DHT routing](#client-mode-dht-routing)
-- [go-multiplex stream muxer](#go-multiplex-stream-muxer)
 - [Raw leaves for unixfs files](#raw-leaves-for-unixfs-files)
 - [ipfs filestore](#ipfs-filestore)
 - [ipfs urlstore](#ipfs-urlstore)
 - [Private Networks](#private-networks)
 - [ipfs p2p](#ipfs-p2p)
 - [p2p http proxy](#p2p-http-proxy)
-- [Circuit Relay](#circuit-relay)
 - [Plugins](#plugins)
 - [Directory Sharding / HAMT](#directory-sharding--hamt)
 - [IPNS PubSub](#ipns-pubsub)
-- [QUIC](#quic)
 - [AutoRelay](#autorelay)
-- [TLS 1.3 Handshake](#tls-13-as-default-handshake-protocol)
 - [Strategic Providing](#strategic-providing)
-- [Graphsync](graphsync)
+- [Graphsync](#graphsync)
+- [Noise](#noise)
+- [Accelerated DHT Client](#accelerated-dht-client)
 
 ---
 
@@ -41,42 +38,27 @@ Candidate, disabled by default but will be enabled by default in 0.6.0.
 
 ### In Version
 
-0.4.5
+0.4.5 (`--enable-pubsub-experiment`)
+0.11.0 (`Pubsub.Enabled` flag in config)
 
 ### How to enable
 
-run your daemon with the `--enable-pubsub-experiment` flag. Then use the
-`ipfs pubsub` commands.
+Run your daemon with the `--enable-pubsub-experiment` flag
+or modify your ipfs config and restart the daemon:
+```
+ipfs config --json Pubsub.Enabled true
+```
 
-### gossipsub
+Then use the `ipfs pubsub` commands.
 
-Gossipsub is a new, experimental routing protocol for pubsub that
-should waste less bandwidth than floodsub, the current pubsub
-protocol. It's backward compatible with floodsub so enabling this
-feature shouldn't break compatibility with existing IPFS nodes.
+NOTE: `--enable-pubsub-experiment` CLI flag overrides `Pubsub.Enabled` config.
 
-You can enable gossipsub via configuration:
-`ipfs config Pubsub.Router gossipsub`
-
-### Message Signing
-
-As of 0.4.18, go-ipfs signs all pubsub messages by default. For now, it doesn't
-*reject* unsigned messages but it will in the future.
-
-You can turn off message signing (not recommended unless you're using a private
-network) by running:
-`ipfs config Pubsub.DisableSigning true`
-
-You can turn on strict signature verification (require that all messages be
-signed) by running:
-`ipfs config Pubsub.StrictSignatureVerification true`
-
-(this last option will be set to true by default and eventually removed entirely)
+Configuration documentation can be found in [go-ipfs/docs/config.md](./config.md#pubsub)
 
 ### Road to being a real feature
-- [ ] Needs more people to use and report on how well it works
-- [ ] Needs authenticating modes to be implemented
-- [ ] needs performance analyses to be done
+
+- [ ] Needs to not impact peers who don't use pubsub:
+      https://github.com/libp2p/go-libp2p-pubsub/issues/332
 
 ## Raw Leaves for unixfs files
 
@@ -428,33 +410,38 @@ See [Plugin docs](./plugins.md)
 ## Directory Sharding / HAMT
 
 ### In Version
-0.4.8
+
+- 0.4.8:
+  - Introduced `Experimental.ShardingEnabled` which enabled sharding globally.
+  - All-or-nothing, unnecessary sharding of small directories.
+
+- 0.11.0 :
+  - Removed support for `Experimental.ShardingEnabled`
+  - Replaced with automatic sharding based on the block size
 
 ### State
-Experimental
 
-Allows creating directories with an unlimited number of entries.
+Replaced by autosharding.
 
-**Caveats:**
-1. right now it is a GLOBAL FLAG which will impact the final CID of all directories produced by `ipfs.add` (even the small ones)
-2. currently size of unixfs directories is limited by the maximum block size
+The `Experimental.ShardingEnabled` config field is no longer used, please remove it from your configs.
 
-### Basic Usage:
-
-```
-ipfs config --json Experimental.ShardingEnabled true
-```
-
-### Road to being a real feature
-
-- [ ] Make sure that objects that don't have to be sharded aren't
-- [ ] Generalize sharding and define a new layer between IPLD and IPFS
+go-ipfs now automatically shards when directory block is bigger than 256KB, ensuring every block is small enough to be exchanged with other peers
 
 ## IPNS pubsub
 
 ### In Version
 
-0.4.14
+0.4.14 :
+  - Introduced
+
+0.5.0 :
+   - No longer needs to use the DHT for the first resolution
+   - When discovering PubSub peers via the DHT, the DHT key is different from previous versions
+      - This leads to 0.5 IPNS pubsub peers and 0.4 IPNS pubsub peers not being able to find each other in the DHT
+   - Robustness improvements
+
+0.11.0 :
+  - Can be enabled via `Ipns.UsePubsub` flag in config
 
 ### State
 
@@ -466,55 +453,40 @@ When it is enabled:
 - IPNS publishers push records to a name-specific pubsub topic,
   in addition to publishing to the DHT.
 - IPNS resolvers subscribe to the name-specific topic on first
-  resolution and receive subsequently published records through pubsub in real time. This makes subsequent resolutions instant, as they are resolved through the local cache. Note that the initial resolution still goes through the DHT, as there is no message history in pubsub.
+  resolution and receive subsequently published records through pubsub in real time.
+  This makes subsequent resolutions instant, as they are resolved through the local cache.
 
 Both the publisher and the resolver nodes need to have the feature enabled for it to work effectively.
 
+Note: While IPNS pubsub has been available since 0.4.14, it received major changes in 0.5.0.
+Users interested in this feature should upgrade to at least 0.5.0
+
 ### How to enable
 
-run your daemon with the `--enable-namesys-pubsub` flag; enables pubsub.
+Run your daemon with the `--enable-namesys-pubsub` flag
+or modify your ipfs config and restart the daemon:
+```
+ipfs config --json Ipns.UsePubsub true
+```
+
+NOTE:
+- This feature implicitly enables [ipfs pubsub](#ipfs-pubsub).
+- Passing `--enable-namesys-pubsub` CLI flag overrides `Ipns.UsePubsub` config.
 
 ### Road to being a real feature
 
 - [ ] Needs more people to use and report on how well it works
-- [ ] Add a mechanism for last record distribution on subscription,
-  so that we don't have to hit the DHT for the initial resolution.
-  Alternatively, we could republish the last record periodically.
-
-## QUIC
-
-### In Version
-
-0.4.18
-
-### State
-
-Candidate, disabled by default but it will be enabled by default in 0.6.0.
-
-### How to enable
-
-Modify your ipfs config:
-
-```
-ipfs config --json Experimental.QUIC true
-```
-
-For listening on a QUIC address, add it to the swarm addresses, e.g. `/ip4/0.0.0.0/udp/4001/quic`.
-
-
-### Road to being a real feature
-
-- [ ] The IETF QUIC specification needs to be finalized.
-- [ ] Make sure QUIC connections work reliably
-- [ ] Make sure QUIC connection offer equal or better performance than TCP connections on real-world networks
-- [ ] Finalize libp2p-TLS handshake spec.
-
+- [ ] Pubsub enabled as a real feature
 
 ## AutoRelay
 
 ### In Version
 
-0.4.19
+- 0.4.19 :
+  - Introduced Circuit Relay v1
+- 0.11.0 :
+  - Deprecated v1
+  - Introduced [Circuit Relay v2](https://github.com/libp2p/specs/blob/master/relay/circuit-v2.md)
 
 ### State
 
@@ -527,15 +499,14 @@ Automatically discovers relays and advertises relay addresses when the node is b
 Modify your ipfs config:
 
 ```
-ipfs config --json Swarm.EnableRelayHop false
-ipfs config --json Swarm.EnableAutoRelay true
+ipfs config --json Swarm.RelayClient.Enabled true
 ```
-
-NOTE: Ensuring `Swarm.EnableRelayHop` is _false_ is extremely important here. If you set it to true, you will _act_ as a public relay for the rest of the network instead of _using_ the public relays.
 
 ### Road to being a real feature
 
 - [ ] needs testing
+- [ ] needs to be automatically enabled when AutoNAT detects node is behind an impenetrable NAT.
+
 
 ## Strategic Providing
 
@@ -543,7 +514,7 @@ NOTE: Ensuring `Swarm.EnableRelayHop` is _false_ is extremely important here. If
 
 Experimental, disabled by default.
 
-Replaces the existing provide mechanism with a robust, strategic provider system.
+Replaces the existing provide mechanism with a robust, strategic provider system. Currently enabling this option will provide nothing.
 
 ### How to enable
 
@@ -586,3 +557,64 @@ ipfs config --json Experimental.GraphsyncEnabled true
 ### Road to being a real feature
 
 - [ ] We need to confirm that it can't be used to DoS a node. The server-side logic for GraphSync is quite complex and, if we're not careful, the server might end up performing unbounded work when responding to a malicious request.
+
+## Noise
+
+### State
+
+Stable, enabled by default
+
+[Noise](https://github.com/libp2p/specs/tree/master/noise) libp2p transport based on the [Noise Protocol Framework](https://noiseprotocol.org/noise.html). While TLS remains the default transport in go-ipfs, Noise is easier to implement and is thus the "interop" transport between IPFS and libp2p implementations.
+
+## Accelerated DHT Client
+
+### In Version
+
+0.9.0
+
+### State
+
+Experimental, default-disabled.
+
+Utilizes an alternative DHT client that searches for and maintains more information about the network
+in exchange for being more performant.
+
+When it is enabled:
+- DHT operations should complete much faster than with it disabled
+- A batching reprovider system will be enabled which takes advantage of some properties of the experimental client to
+  very efficiently put provider records into the network
+- The standard DHT client (and server if enabled) are run alongside the alternative client
+- The operations `ipfs stats dht` and `ipfs stats provide` will have different outputs
+   - `ipfs stats provide` only works when the accelerated DHT client is enabled and shows various statistics regarding
+     the provider/reprovider system
+   - `ipfs stats dht` will default to showing information about the new client
+
+**Caveats:**
+1. Running the experimental client likely will result in more resource consumption (connections, RAM, CPU, bandwidth)
+   - Users that are limited in the number of parallel connections their machines/networks can perform will likely suffer
+   - Currently, the resource usage is not smooth as the client crawls the network in rounds and reproviding is similarly
+     done in rounds
+   - Users who previously had a lot of content but were unable to advertise it on the network will see an increase in
+     egress bandwidth as their nodes start to advertise all of their CIDs into the network. If you have lots of data
+     entering your node that you don't want to advertise consider using [Reprovider Strategies](config.md#reproviderstrategy)
+     to reduce the number of CIDs that you are reproviding. Similarly, if you are running a node that deals mostly with
+     short-lived temporary data (e.g. you use a separate node for ingesting data then for storing and serving it) then
+     you may benefit from using [Strategic Providing](#strategic-providing) to prevent advertising of data that you
+     ultimately will not have.
+2. Currently, the DHT is not usable for queries for the first 5-10 minutes of operation as the routing table is being
+prepared. This means operations like searching the DHT for particular peers or content will not work
+   - You can see if the DHT has been initially populated by running `ipfs stats dht`
+3. Currently, the accelerated DHT client is not compatible with LAN-based DHTs and will not perform operations against
+them
+
+### How to enable
+
+```
+ipfs config --json Experimental.AcceleratedDHTClient true
+```
+
+### Road to being a real feature
+
+- [ ] Needs more people to use and report on how well it works
+- [ ] Should be usable for queries (even if slower/less efficient) shortly after startup
+- [ ] Should be usable with non-WAN DHTs

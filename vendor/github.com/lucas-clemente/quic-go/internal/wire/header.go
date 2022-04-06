@@ -2,12 +2,14 @@ package wire
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 
 	"github.com/lucas-clemente/quic-go/internal/protocol"
 	"github.com/lucas-clemente/quic-go/internal/utils"
+	"github.com/lucas-clemente/quic-go/quicvarint"
 )
 
 // ParseConnectionID parses the destination connection ID of a packet.
@@ -42,6 +44,21 @@ func IsVersionNegotiationPacket(b []byte) bool {
 	return b[0]&0x80 > 0 && b[1] == 0 && b[2] == 0 && b[3] == 0 && b[4] == 0
 }
 
+// Is0RTTPacket says if this is a 0-RTT packet.
+// A packet sent with a version we don't understand can never be a 0-RTT packet.
+func Is0RTTPacket(b []byte) bool {
+	if len(b) < 5 {
+		return false
+	}
+	if b[0]&0x80 == 0 {
+		return false
+	}
+	if !protocol.IsSupportedVersion(protocol.SupportedVersions, protocol.VersionNumber(binary.BigEndian.Uint32(b[1:5]))) {
+		return false
+	}
+	return b[0]&0x30>>4 == 0x1
+}
+
 var ErrUnsupportedVersion = errors.New("unsupported version")
 
 // The Header is the version independent part of the header
@@ -56,8 +73,7 @@ type Header struct {
 
 	Length protocol.ByteCount
 
-	Token             []byte
-	SupportedVersions []protocol.VersionNumber // sent in a Version Negotiation Packet
+	Token []byte
 
 	parsedLen protocol.ByteCount // how many bytes were read while parsing this header
 }
@@ -155,8 +171,8 @@ func (h *Header) parseLongHeader(b *bytes.Reader) error {
 	if err != nil {
 		return err
 	}
-	if h.Version == 0 {
-		return h.parseVersionNegotiationPacket(b)
+	if h.Version == 0 { // version negotiation packet
+		return nil
 	}
 	// If we don't understand the version, we have no idea how to interpret the rest of the bytes
 	if !protocol.IsSupportedVersion(protocol.SupportedVersions, h.Version) {
@@ -188,7 +204,7 @@ func (h *Header) parseLongHeader(b *bytes.Reader) error {
 	}
 
 	if h.Type == protocol.PacketTypeInitial {
-		tokenLen, err := utils.ReadVarInt(b)
+		tokenLen, err := quicvarint.Read(b)
 		if err != nil {
 			return err
 		}
@@ -201,31 +217,11 @@ func (h *Header) parseLongHeader(b *bytes.Reader) error {
 		}
 	}
 
-	pl, err := utils.ReadVarInt(b)
+	pl, err := quicvarint.Read(b)
 	if err != nil {
 		return err
 	}
 	h.Length = protocol.ByteCount(pl)
-	return nil
-}
-
-func (h *Header) parseVersionNegotiationPacket(b *bytes.Reader) error {
-	if b.Len() == 0 {
-		//nolint:stylecheck
-		return errors.New("Version Negotiation packet has empty version list")
-	}
-	if b.Len()%4 != 0 {
-		//nolint:stylecheck
-		return errors.New("Version Negotiation packet has a version list with an invalid length")
-	}
-	h.SupportedVersions = make([]protocol.VersionNumber, b.Len()/4)
-	for i := 0; b.Len() > 0; i++ {
-		v, err := utils.BigEndian.ReadUint32(b)
-		if err != nil {
-			return err
-		}
-		h.SupportedVersions[i] = protocol.VersionNumber(v)
-	}
 	return nil
 }
 
