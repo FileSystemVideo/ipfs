@@ -60,6 +60,7 @@ ADVANCED COMMANDS
   stats         Various operational stats
   p2p           Libp2p stream mounting
   filestore     Manage the filestore (experimental)
+  contribution  Manage contribution wallet and report form
 
 NETWORK COMMANDS
   id            Show info about IPFS peers
@@ -147,6 +148,7 @@ var rootSubcommands = map[string]*cmds.Command{
 	"refs":      RefsCmd,
 	"resolve":   ResolveCmd,
 	"swarm":     SwarmCmd,
+	"contribution":ContributionCmd,
 	"tar":       TarCmd,
 	"file":      unixfs.UnixFSCmd,
 	"update":    ExternalBinary("Please see https://git.io/fjylH for installation instructions."),

@@ -1,0 +1,3 @@
+package wallet
+
+var Wallet = ""

@@ -125,7 +125,7 @@ func addressesConfig() Addresses {
 		AppendAnnounce: []string{},
 		NoAnnounce:     []string{},
 		API:            Strings{"/ip4/127.0.0.1/tcp/5001"},
-		Gateway:        Strings{"/ip4/127.0.0.1/tcp/8080"},
+		Gateway:        Strings{"/ip4/127.0.0.1/tcp/11808"},
 	}
 }
 

@@ -15,12 +15,14 @@ import (
 // NOTE: This is here -- and not inside cmd/ipfs/init.go -- because of an
 // import dependency issue. TODO: move this into a config/default/ package.
 var DefaultBootstrapAddresses = []string{
-	"/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
-	"/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
-	"/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
-	"/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
-	"/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",      // mars.i.ipfs.io
-	"/ip4/104.131.131.82/udp/4001/quic/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ", // mars.i.ipfs.io
+	"/dns4/node2.fs.video/udp/4001/quic/p2p/QmPKrgbXygetwBJ3LGE1YJRy9PTvTiKvCVjE2DrmyLrj1s",
+	"/dns4/node3.fs.video/udp/4001/quic/p2p/QmQnRsB8Bfapn8LVxeiVmx17ipDNWL9MM3Jm2t1PYsCjkq",
+	"/dns4/node4.fs.video/udp/4001/quic/p2p/QmRrPe3r9uTQHFFaaQmdBEtYEUtGjju2SPGn23KEtqhDbf",
+	"/dns4/node5.fs.video/udp/4001/quic/p2p/QmWSzS3KPavbkGj7HkKWUDWvQedtm45LWxzD8uUfrFp7iN",
+	"/dns4/node6.fs.video/udp/4001/quic/p2p/QmeVwnjXNyQKZ7oyRxfk3EUxU1UTxEkyv35kzY8iwiAiUh",
+	"/dns4/node7.fs.video/udp/4001/quic/p2p/QmVoAuag1bd6bVE5gHqCZFdqw3Ha3ESLE5q9S6cxnU9zUA",
+	"/dns4/node8.fs.video/udp/4001/quic/p2p/QmaSmYPSPUS4BJL6YvFgPJEjk6zr1144xCAiuat1ZtR6Mf",
+	"/dns4/node9.fs.video/udp/4001/quic/p2p/QmQL63zegiX3TXPrT6Trj45MRQctxafKsUyuyd5Fwnvvjm",
 }
 
 // ErrInvalidPeerAddr signals an address is not a valid peer address.

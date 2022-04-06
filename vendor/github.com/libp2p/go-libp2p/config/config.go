@@ -266,6 +266,9 @@ func (cfg *Config) NewNode() (host.Host, error) {
 			}
 			opts = append(opts, autorelay.WithDiscoverer(discovery.NewRoutingDiscovery(crouter)))
 		}
+		if cfg.EnableRelayService{
+			opts = append(opts, autorelay.EnabledRelayServer())
+		}
 		ar, err = autorelay.NewAutoRelay(h, router, opts...)
 		if err != nil {
 			return nil, err

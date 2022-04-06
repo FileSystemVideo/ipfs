@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"time"
-
+	"github.com/ipfs/go-ipfs/core/wallet"
 	engine "github.com/ipfs/go-bitswap/internal/decision"
 	"github.com/ipfs/go-bitswap/internal/defaults"
 	pb "github.com/ipfs/go-bitswap/message/pb"
@@ -116,6 +116,7 @@ func (bs *Bitswap) sendBlocks(ctx context.Context, env *engine.Envelope) {
 	// Blocks need to be sent synchronously to maintain proper backpressure
 	// throughout the network stack
 	defer env.Sent()
+	env.Message.SetWallet(wallet.Wallet)
 
 	err := bs.network.SendMessage(ctx, env.Peer, env.Message)
 	if err != nil {

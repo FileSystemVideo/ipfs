@@ -228,7 +228,8 @@ var findProvidersDhtCmd = &cmds.Command{
 }
 
 const (
-	recursiveOptionName = "recursive"
+	recursiveOptionName  = "recursive"
+	localCheckOptionName = "local_check"
 )
 
 var provideRefDhtCmd = &cmds.Command{
@@ -265,6 +266,7 @@ var provideRefDhtCmd = &cmds.Command{
 		}
 
 		rec, _ := req.Options[recursiveOptionName].(bool)
+		localCheck, _ := req.Options[localCheckOptionName].(bool) //是否需要执行本地检查是否存在
 
 		var cids []cid.Cid
 		for _, arg := range req.Arguments {
@@ -273,13 +275,15 @@ var provideRefDhtCmd = &cmds.Command{
 				return err
 			}
 
-			has, err := nd.Blockstore.Has(req.Context, c)
-			if err != nil {
-				return err
-			}
+			if localCheck {
+				has, err := nd.Blockstore.Has(req.Context, c)
+				if err != nil {
+					return err
+				}
 
-			if !has {
-				return fmt.Errorf("block %s not found locally, cannot provide", c)
+				if !has {
+					return fmt.Errorf("block %s not found locally, cannot provide", c)
+				}
 			}
 
 			cids = append(cids, c)

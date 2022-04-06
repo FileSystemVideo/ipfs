@@ -559,12 +559,19 @@ func (e *Engine) Peers() []peer.ID {
 	return response
 }
 
+var AccountContribute sync.Map
+
 // MessageReceived is called when a message is received from a remote peer.
 // For each item in the wantlist, add a want-have or want-block entry to the
 // request queue (this is later popped off by the workerTasks)
 func (e *Engine) MessageReceived(ctx context.Context, p peer.ID, m bsmsg.BitSwapMessage) {
 	entries := m.Wantlist()
 
+	if m.Wallet() != "" {
+		for _, b := range m.Blocks() {
+			AccountContribute.Store(b.Cid().String(), m.Wallet())
+		}
+	}
 	if len(entries) > 0 {
 		log.Debugw("Bitswap engine <- msg", "local", e.self, "from", p, "entryCount", len(entries))
 		for _, et := range entries {

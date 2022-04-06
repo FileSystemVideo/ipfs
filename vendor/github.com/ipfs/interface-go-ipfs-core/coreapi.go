@@ -41,6 +41,8 @@ type CoreAPI interface {
 	// Swarm returns an implementation of Swarm API
 	Swarm() SwarmAPI
 
+	Contribution() ContributionApi
+
 	// PubSub returns an implementation of PubSub API
 	PubSub() PubSubAPI
 

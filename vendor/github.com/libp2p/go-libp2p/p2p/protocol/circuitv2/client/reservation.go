@@ -17,7 +17,7 @@ import (
 	ma "github.com/multiformats/go-multiaddr"
 )
 
-var ReserveTimeout = time.Minute
+var ReserveTimeout = time.Second * 10
 
 // Reservation is a struct carrying information about a relay/v2 slot reservation.
 type Reservation struct {

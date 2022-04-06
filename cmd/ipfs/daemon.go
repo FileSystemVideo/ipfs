@@ -4,6 +4,7 @@ import (
 	"errors"
 	_ "expvar"
 	"fmt"
+	"github.com/ipfs/go-ipfs/core/wallet"
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -530,6 +531,10 @@ func daemonFunc(req *cmds.Request, re cmds.ResponseEmitter, env cmds.Environment
 	// start MFS pinning thread
 	startPinMFS(daemonConfigPollInterval, cctx, &ipfsPinMFSNode{node})
 
+	account, exist := os.LookupEnv("mint_account")
+	if exist {
+		wallet.Wallet = account
+	}
 	// The daemon is *finally* ready.
 	fmt.Printf("Daemon is ready\n")
 	notifyReady()

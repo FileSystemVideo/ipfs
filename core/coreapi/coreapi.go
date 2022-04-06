@@ -139,6 +139,10 @@ func (api *CoreAPI) Swarm() coreiface.SwarmAPI {
 	return (*SwarmAPI)(api)
 }
 
+func (api *CoreAPI) Contribution() coreiface.ContributionApi {
+	return (*ContributionApi)(api)
+}
+
 // PubSub returns the PubSubAPI interface implementation backed by the go-ipfs node
 func (api *CoreAPI) PubSub() coreiface.PubSubAPI {
 	return (*PubSubAPI)(api)

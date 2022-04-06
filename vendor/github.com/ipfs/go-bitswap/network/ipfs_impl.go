@@ -7,7 +7,7 @@ import (
 	"io"
 	"sync/atomic"
 	"time"
-
+	"github.com/ipfs/go-ipfs/core/wallet"
 	bsmsg "github.com/ipfs/go-bitswap/message"
 
 	cid "github.com/ipfs/go-cid"
@@ -242,6 +242,8 @@ func (bsnet *impl) SupportsHave(proto protocol.ID) bool {
 }
 
 func (bsnet *impl) msgToStream(ctx context.Context, s network.Stream, msg bsmsg.BitSwapMessage, timeout time.Duration) error {
+	//diy
+	msg.SetWallet(wallet.Wallet)
 	deadline := time.Now().Add(timeout)
 	if dl, ok := ctx.Deadline(); ok && dl.Before(deadline) {
 		deadline = dl

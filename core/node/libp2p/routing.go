@@ -74,7 +74,7 @@ func BaseRouting(experimentalDHTClient bool) interface{} {
 				return out, err
 			}
 			bspeers, err := cfg.BootstrapPeers()
-			if err != nil {
+			if err != nil  {
 				return out, err
 			}
 

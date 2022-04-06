@@ -2,6 +2,7 @@ package options
 
 type DhtProvideSettings struct {
 	Recursive bool
+	LocalCheck bool
 }
 
 type DhtFindProvidersSettings struct {
@@ -14,6 +15,7 @@ type DhtFindProvidersOption func(*DhtFindProvidersSettings) error
 func DhtProvideOptions(opts ...DhtProvideOption) (*DhtProvideSettings, error) {
 	options := &DhtProvideSettings{
 		Recursive: false,
+		LocalCheck: true,
 	}
 
 	for _, opt := range opts {

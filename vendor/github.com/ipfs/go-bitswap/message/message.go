@@ -15,6 +15,7 @@ import (
 
 	u "github.com/ipfs/go-ipfs-util"
 	"github.com/libp2p/go-libp2p-core/network"
+	"github.com/ipfs/go-ipfs/core/wallet"
 )
 
 // BitSwapMessage is the basic interface for interacting building, encoding,
@@ -76,6 +77,10 @@ type BitSwapMessage interface {
 
 	// Clone the message fields
 	Clone() BitSwapMessage
+
+	Wallet() string
+
+	SetWallet(string)
 }
 
 // Exportable is an interface for structures than can be
@@ -147,11 +152,17 @@ type impl struct {
 	blocks         map[cid.Cid]blocks.Block
 	blockPresences map[cid.Cid]pb.Message_BlockPresenceType
 	pendingBytes   int32
+	
+	//diy
+	walletlist string
+	walletsign string
 }
 
 // New returns a new, empty bitswap message
 func New(full bool) BitSwapMessage {
-	return newMsg(full)
+	//return newMsg(full)
+	//diy
+	return NewMsgWithWallet(full, wallet.Wallet)
 }
 
 func newMsg(full bool) *impl {
@@ -160,6 +171,19 @@ func newMsg(full bool) *impl {
 		wantlist:       make(map[cid.Cid]*Entry),
 		blocks:         make(map[cid.Cid]blocks.Block),
 		blockPresences: make(map[cid.Cid]pb.Message_BlockPresenceType),
+	}
+}
+
+//diy
+func NewMsgWithWallet(full bool, wallet string) BitSwapMessage {
+	//walletsign签名
+	return &impl{
+		blocks:     make(map[cid.Cid]blocks.Block),
+		wantlist:   make(map[cid.Cid]*Entry),
+		full:       full,
+		blockPresences: make(map[cid.Cid]pb.Message_BlockPresenceType),
+		walletlist: wallet,
+		walletsign: wallet + "sign",
 	}
 }
 
@@ -176,6 +200,9 @@ func (m *impl) Clone() BitSwapMessage {
 		msg.blockPresences[k] = m.blockPresences[k]
 	}
 	msg.pendingBytes = m.pendingBytes
+	
+	msg.walletlist = m.walletlist
+	msg.walletsign = m.walletsign
 	return msg
 }
 
@@ -240,7 +267,9 @@ func newMessageFromProto(pbm pb.Message) (BitSwapMessage, error) {
 	}
 
 	m.pendingBytes = pbm.PendingBytes
-
+	//diy
+	m.walletlist = pbm.GetWalletlist()
+	m.walletsign = pbm.GetWalletsign()
 	return m, nil
 }
 
@@ -429,6 +458,10 @@ func (m *impl) ToProtoV0() *pb.Message {
 	for _, b := range blocks {
 		pbm.Blocks = append(pbm.Blocks, b.RawData())
 	}
+
+	//diy
+	pbm.Walletlist = m.walletlist
+	pbm.Walletsign = m.walletsign
 	return pbm
 }
 
@@ -458,7 +491,9 @@ func (m *impl) ToProtoV1() *pb.Message {
 	}
 
 	pbm.PendingBytes = m.PendingBytes()
-
+	//diy
+	pbm.Walletlist = m.walletlist
+	pbm.Walletsign = m.walletsign
 	return pbm
 }
 
@@ -497,4 +532,14 @@ func (m *impl) Loggable() map[string]interface{} {
 		"blocks": blocks,
 		"wants":  m.Wantlist(),
 	}
+}
+
+//diy
+func (m *impl) Wallet() string {
+	return m.walletlist
+}
+
+//diy
+func (m *impl) SetWallet(w string) {
+	m.walletlist = w
 }
